@@ -44,16 +44,23 @@ struct StatusLabelView: View {
     var body: some View {
         Image(nsImage: StatusBarImage.make(
             codexRemaining: store.snapshot.codexWeekly?.remainingPercent,
-            claudeRemaining: store.snapshot.claudeSessionForDisplay?.remainingPercent
+            claudeRemaining: store.snapshot.claudeSessionForDisplay?.remainingPercent,
+            subscriptionWarning: store.accounts.map { $0.subscriptionWarning() }.max() ?? .none
         ))
         .renderingMode(.original)
-        .help("CX：Codex 周额度 · CC：Claude Code 日/会话额度")
+        .help("Codex 与 Claude Code 额度、订阅到期提醒")
     }
+}
+
+private enum PanelTab: String, CaseIterable {
+    case status = "当前状态"
+    case accounts = "账号看板"
 }
 
 struct QuotaPanelView: View {
     @ObservedObject var store: QuotaStore
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
+    @State private var selectedTab = PanelTab.status
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -66,6 +73,11 @@ struct QuotaPanelView: View {
                     Text(refreshText).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if store.accounts.contains(where: { $0.subscriptionWarning() != .none }) {
+                    Image(systemName: "exclamationmark.circle.fill")
+                        .foregroundStyle(store.accounts.contains(where: { $0.subscriptionWarning() == .urgent }) ? .red : .orange)
+                        .help("有账号订阅即将到期")
+                }
                 Button {
                     Task { await store.refresh() }
                 } label: {
@@ -77,17 +89,18 @@ struct QuotaPanelView: View {
             }
 
             Divider()
-            providerSection(
-                title: "Claude Code",
-                rows: [store.snapshot.claudeSessionForDisplay, store.snapshot.claudeWeekly].compactMap { $0 },
-                error: store.snapshot.claudeError
-            )
-            Divider()
-            providerSection(
-                title: "Codex",
-                rows: [store.snapshot.codexWeekly].compactMap { $0 },
-                error: store.snapshot.codexError
-            )
+            Picker("视图", selection: $selectedTab) {
+                ForEach(PanelTab.allCases, id: \.self) { tab in
+                    Text(tab.rawValue).tag(tab)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if selectedTab == .status {
+                currentStatusContent
+            } else {
+                AccountDashboardView(store: store)
+            }
             Divider()
 
             Toggle("登录时启动", isOn: Binding(
@@ -107,11 +120,28 @@ struct QuotaPanelView: View {
             }
         }
         .padding(16)
-        .frame(width: 360)
+        .frame(width: 430)
     }
 
     @ViewBuilder
-    private func providerSection(title: String, rows: [QuotaWindow], error: String?) -> some View {
+    private var currentStatusContent: some View {
+        providerSection(
+            title: "Claude Code",
+            account: store.accounts.first { $0.provider == .claudeCode && $0.isCurrent },
+            rows: [store.snapshot.claudeSessionForDisplay, store.snapshot.claudeWeekly].compactMap { $0 },
+            error: store.snapshot.claudeError
+        )
+        Divider()
+        providerSection(
+            title: "Codex",
+            account: store.accounts.first { $0.provider == .codex && $0.isCurrent },
+            rows: [store.snapshot.codexWeekly].compactMap { $0 },
+            error: store.snapshot.codexError
+        )
+    }
+
+    @ViewBuilder
+    private func providerSection(title: String, account: AccountRecord?, rows: [QuotaWindow], error: String?) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 7) {
                 Image(nsImage: title == "Claude Code" ? BrandAssets.claude(size: 18) : BrandAssets.openAI(size: 18))
@@ -121,6 +151,12 @@ struct QuotaPanelView: View {
                     Text(title == "Claude Code" ? "Anthropic" : "OpenAI")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
+                    if let account {
+                        Text(account.email)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
             ForEach(Array(rows.enumerated()), id: \.offset) { _, quota in
@@ -154,6 +190,213 @@ struct QuotaPanelView: View {
         } catch {
             launchAtLogin = SMAppService.mainApp.status == .enabled
         }
+    }
+}
+
+private struct AccountDashboardView: View {
+    @ObservedObject var store: QuotaStore
+    @State private var editingAccount: AccountRecord?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("本地账号记录").font(.headline)
+                    Text("退出或切换后仍保留额度与重置时间")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Text("仅存本机")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+
+            if store.accounts.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "person.crop.circle.badge.questionmark")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text("暂无账号记录").font(.headline)
+                    Text("登录 Claude Code 或 Codex 后点刷新，账号会自动加入看板。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 180)
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 10) {
+                        ForEach(store.accounts) { account in
+                            AccountCard(account: account) {
+                                editingAccount = account
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 390)
+            }
+        }
+        .sheet(item: $editingAccount) { account in
+            AccountEditorView(store: store, account: account)
+        }
+    }
+}
+
+private struct AccountCard: View {
+    let account: AccountRecord
+    let edit: () -> Void
+
+    private var warningColor: Color {
+        switch account.subscriptionWarning() {
+        case .urgent: return .red
+        case .soon: return .orange
+        case .none: return .green
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .top, spacing: 9) {
+                Image(nsImage: account.provider == .claudeCode ? BrandAssets.claude(size: 20) : BrandAssets.openAI(size: 20))
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(account.provider.displayName).font(.subheadline.bold())
+                        if account.isCurrent {
+                            Text("当前登录")
+                                .font(.caption2.bold())
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(.green.opacity(0.16), in: Capsule())
+                                .foregroundStyle(.green)
+                        }
+                    }
+                    Text(account.email)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                    if let plan = account.planName, !plan.isEmpty {
+                        Text(plan).font(.caption2).foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Circle()
+                    .fill(warningColor)
+                    .frame(width: 8, height: 8)
+                    .shadow(color: warningColor.opacity(0.65), radius: account.subscriptionWarning() == .none ? 0 : 4)
+                    .help(subscriptionText)
+                Button(action: edit) {
+                    Image(systemName: "slider.horizontal.3")
+                }
+                .buttonStyle(.borderless)
+                .help("设置订阅到期日或删除记录")
+            }
+
+            HStack {
+                Label(subscriptionText, systemImage: "calendar.badge.clock")
+                    .foregroundStyle(account.subscriptionWarning() == .urgent ? .red : account.subscriptionWarning() == .soon ? .orange : .secondary)
+                Spacer()
+                Text("记录于 \(account.lastRefreshedAt.formatted(date: .abbreviated, time: .shortened))")
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption2)
+
+            ForEach(Array(account.quotas.enumerated()), id: \.offset) { _, quota in
+                HistoricalQuotaRow(quota: quota, isCurrent: account.isCurrent)
+            }
+        }
+        .padding(11)
+        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.09)))
+    }
+
+    private var subscriptionText: String {
+        guard let date = account.subscriptionExpiresAt,
+              let days = account.subscriptionDaysRemaining() else {
+            return "订阅到期日未提供，可手动设置"
+        }
+        if days < 0 { return "订阅已过期 \(-days) 天（\(date.formatted(date: .abbreviated, time: .omitted))）" }
+        if days == 0 { return "订阅今天到期" }
+        return "订阅剩余 \(days) 天（\(date.formatted(date: .abbreviated, time: .omitted))）"
+    }
+}
+
+private struct HistoricalQuotaRow: View {
+    let quota: QuotaWindow
+    let isCurrent: Bool
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            HStack(spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(quota.windowName).font(.caption.weight(.medium))
+                    Text(resetStatus(now: context.date))
+                        .font(.caption2)
+                        .foregroundStyle(resetPassed(now: context.date) ? .green : .secondary)
+                }
+                Spacer()
+                BatteryGauge(remaining: quota.remainingPercent, compact: true)
+            }
+        }
+    }
+
+    private func resetPassed(now: Date) -> Bool {
+        quota.resetsAt.map { $0 <= now } ?? false
+    }
+
+    private func resetStatus(now: Date) -> String {
+        guard let reset = quota.resetsAt else { return "未记录重置时间" }
+        if reset <= now {
+            return isCurrent ? "重置时间已到，等待刷新确认" : "额度应已刷新，可切回此账号确认"
+        }
+        return "预计 \(reset.formatted(date: .abbreviated, time: .shortened)) 重置"
+    }
+}
+
+private struct AccountEditorView: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: QuotaStore
+    let account: AccountRecord
+    @State private var hasExpiration: Bool
+    @State private var expirationDate: Date
+
+    init(store: QuotaStore, account: AccountRecord) {
+        self.store = store
+        self.account = account
+        _hasExpiration = State(initialValue: account.subscriptionExpiresAt != nil)
+        _expirationDate = State(initialValue: account.subscriptionExpiresAt ?? Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date())
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("管理账号").font(.title3.bold())
+            Text(account.email).font(.subheadline).textSelection(.enabled)
+            Text("官方本地接口目前不提供订阅账单到期日。这里保存的是你在本机设置的日期，不会上传。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Toggle("记录订阅到期日", isOn: $hasExpiration)
+            if hasExpiration {
+                DatePicker("到期日", selection: $expirationDate, displayedComponents: .date)
+            }
+
+            HStack {
+                Button("删除历史记录", role: .destructive) {
+                    store.removeAccount(accountID: account.id)
+                    dismiss()
+                }
+                Spacer()
+                Button("取消") { dismiss() }
+                Button("保存") {
+                    store.setSubscriptionExpiration(accountID: account.id, date: hasExpiration ? expirationDate : nil)
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(18)
+        .frame(width: 380)
     }
 }
 

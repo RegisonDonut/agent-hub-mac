@@ -1,12 +1,97 @@
 import Foundation
 
-struct QuotaWindow: Equatable, Sendable {
+struct QuotaWindow: Codable, Equatable, Sendable {
     let usedPercent: Double
     let resetsAt: Date?
     let windowName: String
 
     var remainingPercent: Double {
         min(100, max(0, 100 - usedPercent))
+    }
+}
+
+enum CodingProvider: String, Codable, CaseIterable, Sendable {
+    case claudeCode
+    case codex
+
+    var displayName: String { self == .claudeCode ? "Claude Code" : "Codex" }
+    var companyName: String { self == .claudeCode ? "Anthropic" : "OpenAI" }
+}
+
+enum SubscriptionWarning: Int, Comparable, Sendable {
+    case none = 0
+    case soon = 1
+    case urgent = 2
+
+    static func < (lhs: SubscriptionWarning, rhs: SubscriptionWarning) -> Bool {
+        lhs.rawValue < rhs.rawValue
+    }
+}
+
+struct AccountIdentity: Equatable, Sendable {
+    let email: String
+    let planName: String?
+    let subscriptionExpiresAt: Date?
+
+    init(email: String, planName: String?, subscriptionExpiresAt: Date? = nil) {
+        self.email = email
+        self.planName = planName
+        self.subscriptionExpiresAt = subscriptionExpiresAt
+    }
+}
+
+struct AccountRecord: Codable, Equatable, Identifiable, Sendable {
+    let id: String
+    let provider: CodingProvider
+    var email: String
+    var planName: String?
+    var subscriptionExpiresAt: Date?
+    var quotas: [QuotaWindow]
+    var lastRefreshedAt: Date
+    var isCurrent: Bool
+
+    init(
+        provider: CodingProvider,
+        email: String,
+        planName: String? = nil,
+        subscriptionExpiresAt: Date? = nil,
+        quotas: [QuotaWindow] = [],
+        lastRefreshedAt: Date = Date(),
+        isCurrent: Bool = true
+    ) {
+        self.id = Self.makeID(provider: provider, email: email)
+        self.provider = provider
+        self.email = email
+        self.planName = planName
+        self.subscriptionExpiresAt = subscriptionExpiresAt
+        self.quotas = quotas
+        self.lastRefreshedAt = lastRefreshedAt
+        self.isCurrent = isCurrent
+    }
+
+    static func makeID(provider: CodingProvider, email: String) -> String {
+        "\(provider.rawValue):\(email.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
+    }
+
+    func subscriptionDaysRemaining(now: Date = Date(), calendar: Calendar = .current) -> Int? {
+        guard let subscriptionExpiresAt else { return nil }
+        let start = calendar.startOfDay(for: now)
+        let end = calendar.startOfDay(for: subscriptionExpiresAt)
+        return calendar.dateComponents([.day], from: start, to: end).day
+    }
+
+    func hasPassedQuotaReset(now: Date = Date()) -> Bool {
+        quotas.contains { reset in
+            guard let date = reset.resetsAt else { return false }
+            return date <= now
+        }
+    }
+
+    func subscriptionWarning(now: Date = Date()) -> SubscriptionWarning {
+        guard let days = subscriptionDaysRemaining(now: now) else { return .none }
+        if days <= 3 { return .urgent }
+        if days <= 7 { return .soon }
+        return .none
     }
 }
 

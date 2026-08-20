@@ -1,22 +1,24 @@
 import Foundation
 
 struct CodexQuotaProvider {
-    func fetch() async throws -> QuotaWindow {
+    func fetch() async throws -> CodexQuotaResult {
         guard let codex = ExecutableLocator.find("codex") else {
             throw QuotaError.executableMissing("Codex CLI")
         }
 
         let requests = [
-            #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-hub","title":"AgentHub","version":"1.0.0"},"capabilities":{}}}"#,
+            #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-hub","title":"AgentHub","version":"1.1.0"},"capabilities":{}}}"#,
             #"{"method":"initialized","params":{}}"#,
-            #"{"id":2,"method":"account/rateLimits/read","params":{}}"#
+            #"{"id":2,"method":"account/read","params":{"refreshToken":false}}"#,
+            #"{"id":3,"method":"account/rateLimits/read","params":{}}"#
         ].joined(separator: "\n") + "\n"
 
         let result = try await ProcessRunner.run(
             executable: codex,
             arguments: ["app-server", "--stdio"],
             stdin: Data(requests.utf8),
-            stdinCloseDelay: 3
+            stdinCloseDelay: 5,
+            timeout: 20
         )
         guard result.exitCode == 0 else {
             let detail = String(data: result.stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -26,13 +28,38 @@ struct CodexQuotaProvider {
             print(String(data: result.stdout, encoding: .utf8) ?? "<non-UTF8 Codex output>")
         }
 
+        var identity: AccountIdentity?
+        var quota: QuotaWindow?
+        var quotaError: String?
+        var accountIsSignedOut = false
         for line in result.stdout.split(separator: 0x0A) {
             guard
                 let object = try? JSONSerialization.jsonObject(with: Data(line)) as? [String: Any],
-                (object["id"] as? Int) == 2,
-                let response = object["result"] as? [String: Any],
-                let rateLimits = response["rateLimits"] as? [String: Any]
+                let id = object["id"] as? Int
             else { continue }
+
+            if id == 3, let error = object["error"] as? [String: Any] {
+                quotaError = (error["message"] as? String) ?? "Codex 额度读取失败"
+                continue
+            }
+            guard let response = object["result"] as? [String: Any] else { continue }
+
+            if id == 2 {
+                if let account = response["account"] as? [String: Any],
+                   let email = account["email"] as? String,
+                   !email.isEmpty {
+                    identity = AccountIdentity(
+                        email: email,
+                        planName: account["planType"] as? String,
+                        subscriptionExpiresAt: explicitSubscriptionDate(in: account)
+                    )
+                } else if response["account"] is NSNull {
+                    accountIsSignedOut = true
+                }
+                continue
+            }
+
+            guard id == 3, let rateLimits = response["rateLimits"] as? [String: Any] else { continue }
 
             let windows = [rateLimits["primary"], rateLimits["secondary"]]
                 .compactMap { $0 as? [String: Any] }
@@ -41,7 +68,11 @@ struct CodexQuotaProvider {
             }
             guard let used = numeric(weekly["usedPercent"]) else { continue }
             let reset = numeric(weekly["resetsAt"]).map { Date(timeIntervalSince1970: $0) }
-            return QuotaWindow(usedPercent: used, resetsAt: reset, windowName: "周额度")
+            quota = QuotaWindow(usedPercent: used, resetsAt: reset, windowName: "周额度")
+        }
+        if accountIsSignedOut && identity == nil { throw QuotaError.notLoggedIn("Codex") }
+        if quota != nil || identity != nil {
+            return CodexQuotaResult(weekly: quota, identity: identity, quotaError: quota == nil ? (quotaError ?? "Codex 额度暂时不可用") : nil)
         }
         throw QuotaError.malformedResponse("Codex")
     }
@@ -52,16 +83,35 @@ struct CodexQuotaProvider {
         if let value = value as? NSNumber { return value.doubleValue }
         return nil
     }
+
+    private func explicitSubscriptionDate(in object: [String: Any]) -> Date? {
+        for key in ["subscriptionExpiresAt", "subscription_expires_at", "planExpiresAt", "plan_expires_at"] {
+            if let seconds = numeric(object[key]) { return Date(timeIntervalSince1970: seconds) }
+            if let string = object[key] as? String,
+               let date = ISO8601DateFormatter.withFractionalSeconds.date(from: string) ?? ISO8601DateFormatter().date(from: string) {
+                return date
+            }
+        }
+        return nil
+    }
+}
+
+struct CodexQuotaResult: Sendable {
+    let weekly: QuotaWindow?
+    let identity: AccountIdentity?
+    let quotaError: String?
 }
 
 struct ClaudeQuotaResult: Sendable {
     let session: QuotaWindow
     let weekly: QuotaWindow
+    let identity: AccountIdentity?
 }
 
 struct ClaudeQuotaProvider {
     func fetch() async throws -> ClaudeQuotaResult {
         let credential = try await readCredential()
+        let identity = try? await readIdentity()
         guard let oauth = credential["claudeAiOauth"] as? [String: Any],
               let token = oauth["accessToken"] as? String,
               !token.isEmpty else {
@@ -69,7 +119,7 @@ struct ClaudeQuotaProvider {
         }
 
         do {
-            return try await requestUsage(token: token)
+            return try await requestUsage(token: token, identity: identity)
         } catch ClaudeHTTPError.unauthorized {
             // Claude Code refreshes its own OAuth token safely; never rewrite Keychain credentials here.
             try? await refreshCredentialThroughCLI()
@@ -78,8 +128,42 @@ struct ClaudeQuotaProvider {
                   let newToken = oauth["accessToken"] as? String else {
                 throw QuotaError.notLoggedIn("Claude Code")
             }
-            return try await requestUsage(token: newToken)
+            return try await requestUsage(token: newToken, identity: try? await readIdentity())
         }
+    }
+
+    private func readIdentity() async throws -> AccountIdentity {
+        guard let claude = ExecutableLocator.find("claude") else {
+            throw QuotaError.executableMissing("Claude Code CLI")
+        }
+        let result = try await ProcessRunner.run(
+            executable: claude,
+            arguments: ["auth", "status", "--json"],
+            timeout: 12
+        )
+        guard result.exitCode == 0,
+              let object = try JSONSerialization.jsonObject(with: result.stdout) as? [String: Any],
+              (object["loggedIn"] as? Bool) == true,
+              let email = object["email"] as? String,
+              !email.isEmpty else {
+            throw QuotaError.notLoggedIn("Claude Code")
+        }
+        return AccountIdentity(
+            email: email,
+            planName: object["subscriptionType"] as? String,
+            subscriptionExpiresAt: explicitSubscriptionDate(in: object)
+        )
+    }
+
+    private func explicitSubscriptionDate(in object: [String: Any]) -> Date? {
+        for key in ["subscriptionExpiresAt", "subscription_expires_at", "planExpiresAt", "plan_expires_at"] {
+            if let seconds = (object[key] as? NSNumber)?.doubleValue { return Date(timeIntervalSince1970: seconds) }
+            if let string = object[key] as? String,
+               let date = ISO8601DateFormatter.withFractionalSeconds.date(from: string) ?? ISO8601DateFormatter().date(from: string) {
+                return date
+            }
+        }
+        return nil
     }
 
     private func readCredential() async throws -> [String: Any] {
@@ -106,7 +190,7 @@ struct ClaudeQuotaProvider {
         )
     }
 
-    private func requestUsage(token: String) async throws -> ClaudeQuotaResult {
+    private func requestUsage(token: String, identity: AccountIdentity?) async throws -> ClaudeQuotaResult {
         guard let url = URL(string: "https://api.anthropic.com/api/oauth/usage") else {
             throw QuotaError.network("Claude Code usage URL 无效")
         }
@@ -138,7 +222,8 @@ struct ClaudeQuotaProvider {
 
         return ClaudeQuotaResult(
             session: QuotaWindow(usedPercent: sessionUsed, resetsAt: resetDate(in: sessionObject), windowName: "日/会话额度（5 小时）"),
-            weekly: QuotaWindow(usedPercent: weeklyUsed, resetsAt: resetDate(in: weeklyObject), windowName: "周额度（7 天）")
+            weekly: QuotaWindow(usedPercent: weeklyUsed, resetsAt: resetDate(in: weeklyObject), windowName: "周额度（7 天）"),
+            identity: identity
         )
     }
 
