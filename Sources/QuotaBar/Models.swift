@@ -18,6 +18,39 @@ enum CodingProvider: String, Codable, CaseIterable, Sendable {
     var companyName: String { self == .claudeCode ? "Anthropic" : "OpenAI" }
 }
 
+enum AccountAvailability: Equatable, Sendable {
+    case liveAvailable
+    case liveExhausted
+    case lastKnownAvailable
+    case estimatedRefreshed
+    case waitingForReset(Date)
+    case unknown
+
+    var isAvailable: Bool {
+        switch self {
+        case .liveAvailable, .lastKnownAvailable, .estimatedRefreshed: return true
+        default: return false
+        }
+    }
+
+    var isUnavailable: Bool {
+        switch self {
+        case .liveExhausted, .waitingForReset: return true
+        default: return false
+        }
+    }
+
+    var sortPriority: Int {
+        switch self {
+        case .liveAvailable, .liveExhausted: return 0
+        case .estimatedRefreshed: return 1
+        case .lastKnownAvailable: return 2
+        case .waitingForReset: return 3
+        case .unknown: return 4
+        }
+    }
+}
+
 struct AccountIdentity: Equatable, Sendable {
     let email: String
     let planName: String?
@@ -60,6 +93,20 @@ struct AccountRecord: Codable, Equatable, Identifiable, Sendable {
         }
     }
 
+    func availability(now: Date = Date()) -> AccountAvailability {
+        guard !quotas.isEmpty else { return .unknown }
+        let exhausted = quotas.filter { $0.remainingPercent <= 0 }
+
+        if isCurrent {
+            return exhausted.isEmpty ? .liveAvailable : .liveExhausted
+        }
+        if exhausted.isEmpty { return .lastKnownAvailable }
+
+        let resetDates = exhausted.compactMap(\.resetsAt)
+        guard resetDates.count == exhausted.count, let readyAt = resetDates.max() else { return .unknown }
+        return readyAt <= now ? .estimatedRefreshed : .waitingForReset(readyAt)
+    }
+
 }
 
 struct QuotaSnapshot: Equatable, Sendable {
@@ -77,6 +124,7 @@ struct QuotaSnapshot: Equatable, Sendable {
         guard let weekly = claudeWeekly, weekly.remainingPercent <= 0 else { return session }
         return QuotaWindow(usedPercent: 100, resetsAt: weekly.resetsAt, windowName: session.windowName)
     }
+
 }
 
 enum QuotaError: LocalizedError {

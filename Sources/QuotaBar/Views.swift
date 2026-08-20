@@ -4,8 +4,10 @@ import ServiceManagement
 struct BatteryGauge: View {
     let remaining: Double?
     var compact = false
+    var muted = false
 
     private var color: Color {
+        if muted { return .secondary.opacity(0.65) }
         guard let remaining else { return .secondary }
         if remaining < 20 { return .red }
         if remaining < 50 { return .orange }
@@ -54,6 +56,19 @@ struct StatusLabelView: View {
 private enum PanelTab: String, CaseIterable {
     case status = "当前状态"
     case accounts = "账号看板"
+}
+
+private enum ProviderFilter: String, CaseIterable {
+    case all = "全部平台"
+    case claude = "Claude Code"
+    case codex = "Codex"
+}
+
+private enum AvailabilityFilter: String, CaseIterable {
+    case all = "全部状态"
+    case available = "可用账号"
+    case unavailable = "无额度"
+    case current = "当前登录"
 }
 
 struct QuotaPanelView: View {
@@ -189,8 +204,21 @@ struct QuotaPanelView: View {
 
 private struct AccountDashboardView: View {
     @ObservedObject var store: QuotaStore
+    @State private var providerFilter = ProviderFilter.all
+    @State private var availabilityFilter = AvailabilityFilter.all
+    @State private var searchText = ""
 
     var body: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            dashboard(now: context.date)
+        }
+    }
+
+    @ViewBuilder
+    private func dashboard(now: Date) -> some View {
+        let visibleAccounts = filteredAccounts(now: now)
+        let refreshedCount = store.accounts.filter { $0.availability(now: now) == .estimatedRefreshed }.count
+
         VStack(alignment: .leading, spacing: 10) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
@@ -205,6 +233,33 @@ private struct AccountDashboardView: View {
                     .foregroundStyle(.secondary)
             }
 
+            if refreshedCount > 0 {
+                Label("\(refreshedCount) 个历史账号预计已刷新，可切回确认", systemImage: "checkmark.circle.fill")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.green)
+            }
+
+            HStack(spacing: 8) {
+                Picker("平台", selection: $providerFilter) {
+                    ForEach(ProviderFilter.allCases, id: \.self) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 118)
+
+                Picker("状态", selection: $availabilityFilter) {
+                    ForEach(AvailabilityFilter.allCases, id: \.self) { filter in
+                        Text(filter.rawValue).tag(filter)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 112)
+
+                TextField("搜索邮箱", text: $searchText)
+                    .textFieldStyle(.roundedBorder)
+            }
+
             if store.accounts.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: "person.crop.circle.badge.questionmark")
@@ -217,10 +272,21 @@ private struct AccountDashboardView: View {
                 }
                 .frame(maxWidth: .infinity)
                 .frame(height: 180)
+            } else if visibleAccounts.isEmpty {
+                VStack(spacing: 7) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text("没有符合筛选条件的账号")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                .frame(height: 100)
             } else {
                 VStack(spacing: 10) {
-                    ForEach(store.accounts) { account in
-                        AccountCard(account: account) {
+                    ForEach(visibleAccounts) { account in
+                        AccountCard(account: account, now: now) {
                             store.removeAccount(accountID: account.id)
                         }
                     }
@@ -229,11 +295,42 @@ private struct AccountDashboardView: View {
             }
         }
     }
+
+    private func filteredAccounts(now: Date) -> [AccountRecord] {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return store.accounts.filter { account in
+            let providerMatches: Bool
+            switch providerFilter {
+            case .all: providerMatches = true
+            case .claude: providerMatches = account.provider == .claudeCode
+            case .codex: providerMatches = account.provider == .codex
+            }
+
+            let availability = account.availability(now: now)
+            let statusMatches: Bool
+            switch availabilityFilter {
+            case .all: statusMatches = true
+            case .available: statusMatches = availability.isAvailable
+            case .unavailable: statusMatches = availability.isUnavailable
+            case .current: statusMatches = account.isCurrent
+            }
+            let searchMatches = query.isEmpty || account.email.lowercased().contains(query)
+            return providerMatches && statusMatches && searchMatches
+        }.sorted { lhs, rhs in
+            let left = lhs.availability(now: now)
+            let right = rhs.availability(now: now)
+            if left.sortPriority != right.sortPriority { return left.sortPriority < right.sortPriority }
+            return lhs.lastRefreshedAt > rhs.lastRefreshedAt
+        }
+    }
 }
 
 private struct AccountCard: View {
     let account: AccountRecord
+    let now: Date
     let delete: () -> Void
+
+    private var availability: AccountAvailability { account.availability(now: now) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -260,6 +357,7 @@ private struct AccountCard: View {
                     }
                 }
                 Spacer()
+                AvailabilityBadge(availability: availability)
                 Button(role: .destructive, action: delete) {
                     Image(systemName: "trash")
                 }
@@ -267,36 +365,89 @@ private struct AccountCard: View {
                 .help("删除本地账号记录")
             }
 
+            Text(statusDetail)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(availability.isAvailable ? .green : .secondary)
+
             Text("记录于 \(account.lastRefreshedAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
 
             ForEach(Array(account.quotas.enumerated()), id: \.offset) { _, quota in
-                HistoricalQuotaRow(quota: quota, isCurrent: account.isCurrent)
+                HistoricalQuotaRow(quota: quota, isCurrent: account.isCurrent, now: now)
             }
         }
         .padding(11)
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.09)))
     }
+
+    private var statusDetail: String {
+        switch availability {
+        case .liveAvailable: return "实时额度可用"
+        case .liveExhausted: return "实时额度已用完"
+        case .lastKnownAvailable: return "已退出 · 上次记录仍有额度，实际状态需登录确认"
+        case .estimatedRefreshed: return "已退出 · 重置时间已到，预计可用，登录后确认"
+        case .waitingForReset(let date): return "已退出 · 约 \(duration(until: date)) 后预计可用"
+        case .unknown: return "已退出 · 历史数据不足，无法判断当前额度"
+        }
+    }
+
+    private func duration(until date: Date) -> String {
+        let interval = max(0, date.timeIntervalSince(now))
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .abbreviated
+        formatter.allowedUnits = interval >= 86_400 ? [.day, .hour] : [.hour, .minute]
+        formatter.maximumUnitCount = 2
+        return formatter.string(from: interval) ?? "很短时间"
+    }
+}
+
+private struct AvailabilityBadge: View {
+    let availability: AccountAvailability
+
+    private var title: String {
+        switch availability {
+        case .liveAvailable: return "可用"
+        case .liveExhausted: return "无额度"
+        case .lastKnownAvailable: return "上次可用"
+        case .estimatedRefreshed: return "预计已刷新"
+        case .waitingForReset: return "等待重置"
+        case .unknown: return "状态未知"
+        }
+    }
+
+    private var color: Color { availability.isAvailable ? .green : .secondary }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(title)
+        }
+        .font(.caption2.bold())
+        .foregroundStyle(color)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .background(color.opacity(0.12), in: Capsule())
+    }
 }
 
 private struct HistoricalQuotaRow: View {
     let quota: QuotaWindow
     let isCurrent: Bool
+    let now: Date
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { context in
-            HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(quota.windowName).font(.caption.weight(.medium))
-                    Text(resetStatus(now: context.date))
-                        .font(.caption2)
-                        .foregroundStyle(resetPassed(now: context.date) ? .green : .secondary)
-                }
-                Spacer()
-                BatteryGauge(remaining: quota.remainingPercent, compact: true)
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(isCurrent ? quota.windowName : "上次记录 · \(quota.windowName)")
+                    .font(.caption.weight(.medium))
+                Text(resetStatus(now: now))
+                    .font(.caption2)
+                    .foregroundStyle(resetPassed(now: now) && !isCurrent ? .green : .secondary)
             }
+            Spacer()
+            BatteryGauge(remaining: quota.remainingPercent, compact: true, muted: !isCurrent)
         }
     }
 
@@ -307,7 +458,7 @@ private struct HistoricalQuotaRow: View {
     private func resetStatus(now: Date) -> String {
         guard let reset = quota.resetsAt else { return "未记录重置时间" }
         if reset <= now {
-            return isCurrent ? "重置时间已到，等待刷新确认" : "额度应已刷新，可切回此账号确认"
+            return isCurrent ? "重置时间已到，等待刷新确认" : "计划重置时间已到"
         }
         return "预计 \(reset.formatted(date: .abbreviated, time: .shortened)) 重置"
     }

@@ -42,6 +42,33 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(repository.load(), records)
     }
 
+    func testHistoricalAccountAvailabilityUsesExhaustedWindowReset() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let reset = now.addingTimeInterval(3_600)
+        var account = AccountRecord(
+            provider: .claudeCode,
+            email: "old@example.com",
+            quotas: [
+                QuotaWindow(usedPercent: 0, resetsAt: nil, windowName: "5 小时"),
+                QuotaWindow(usedPercent: 100, resetsAt: reset, windowName: "周额度")
+            ],
+            isCurrent: false
+        )
+        XCTAssertEqual(account.availability(now: now), .waitingForReset(reset))
+        XCTAssertEqual(account.availability(now: reset), .estimatedRefreshed)
+
+        account.quotas[1] = QuotaWindow(usedPercent: 100, resetsAt: nil, windowName: "周额度")
+        XCTAssertEqual(account.availability(now: now), .unknown)
+    }
+
+    func testCurrentAndHistoricalAvailableStatesAreDistinct() {
+        let quota = QuotaWindow(usedPercent: 40, resetsAt: nil, windowName: "周额度")
+        var account = AccountRecord(provider: .codex, email: "person@example.com", quotas: [quota], isCurrent: true)
+        XCTAssertEqual(account.availability(), .liveAvailable)
+        account.isCurrent = false
+        XCTAssertEqual(account.availability(), .lastKnownAvailable)
+    }
+
     func testLiveProvidersWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTHUB_LIVE_TESTS"] == "1" else {
             throw XCTSkip("Set AGENTHUB_LIVE_TESTS=1 to exercise local logins")
