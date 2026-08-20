@@ -7,7 +7,7 @@ struct CodexQuotaProvider {
         }
 
         let requests = [
-            #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-hub","title":"AgentHub","version":"1.1.0"},"capabilities":{}}}"#,
+            #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-hub","title":"AgentHub","version":"1.1.2"},"capabilities":{}}}"#,
             #"{"method":"initialized","params":{}}"#,
             #"{"id":2,"method":"account/read","params":{"refreshToken":false}}"#,
             #"{"id":3,"method":"account/rateLimits/read","params":{}}"#
@@ -50,8 +50,7 @@ struct CodexQuotaProvider {
                    !email.isEmpty {
                     identity = AccountIdentity(
                         email: email,
-                        planName: account["planType"] as? String,
-                        subscriptionExpiresAt: explicitSubscriptionDate(in: account)
+                        planName: account["planType"] as? String
                     )
                 } else if response["account"] is NSNull {
                     accountIsSignedOut = true
@@ -84,16 +83,6 @@ struct CodexQuotaProvider {
         return nil
     }
 
-    private func explicitSubscriptionDate(in object: [String: Any]) -> Date? {
-        for key in ["subscriptionExpiresAt", "subscription_expires_at", "planExpiresAt", "plan_expires_at"] {
-            if let seconds = numeric(object[key]) { return Date(timeIntervalSince1970: seconds) }
-            if let string = object[key] as? String,
-               let date = ISO8601DateFormatter.withFractionalSeconds.date(from: string) ?? ISO8601DateFormatter().date(from: string) {
-                return date
-            }
-        }
-        return nil
-    }
 }
 
 struct CodexQuotaResult: Sendable {
@@ -150,20 +139,8 @@ struct ClaudeQuotaProvider {
         }
         return AccountIdentity(
             email: email,
-            planName: object["subscriptionType"] as? String,
-            subscriptionExpiresAt: explicitSubscriptionDate(in: object)
+            planName: object["subscriptionType"] as? String
         )
-    }
-
-    private func explicitSubscriptionDate(in object: [String: Any]) -> Date? {
-        for key in ["subscriptionExpiresAt", "subscription_expires_at", "planExpiresAt", "plan_expires_at"] {
-            if let seconds = (object[key] as? NSNumber)?.doubleValue { return Date(timeIntervalSince1970: seconds) }
-            if let string = object[key] as? String,
-               let date = ISO8601DateFormatter.withFractionalSeconds.date(from: string) ?? ISO8601DateFormatter().date(from: string) {
-                return date
-            }
-        }
-        return nil
     }
 
     private func readCredential() async throws -> [String: Any] {

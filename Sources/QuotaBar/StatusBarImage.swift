@@ -1,19 +1,14 @@
 import AppKit
 
 enum StatusBarImage {
-    static func make(codexRemaining: Double?, claudeRemaining: Double?, subscriptionWarning: SubscriptionWarning = .none) -> NSImage {
-        let size = NSSize(width: subscriptionWarning == .none ? 124 : 132, height: 18)
+    static func make(codexRemaining: Double?, claudeRemaining: Double?) -> NSImage {
+        let size = NSSize(width: 124, height: 18)
         let image = NSImage(size: size, flipped: false) { rect in
             NSGraphicsContext.current?.imageInterpolation = .high
             BrandAssets.openAI(size: 14).draw(in: NSRect(x: 0, y: 2, width: 14, height: 14))
             drawProgress(remaining: codexRemaining, x: 18, y: 2, width: 40, height: 14)
             BrandAssets.claude(size: 14).draw(in: NSRect(x: 66, y: 2, width: 14, height: 14))
             drawProgress(remaining: claudeRemaining, x: 84, y: 2, width: 40, height: 14)
-            if subscriptionWarning != .none {
-                let color: NSColor = subscriptionWarning == .urgent ? .systemRed : .systemOrange
-                color.setFill()
-                NSBezierPath(ovalIn: NSRect(x: 126, y: 6, width: 6, height: 6)).fill()
-            }
             return true
         }
         image.isTemplate = false

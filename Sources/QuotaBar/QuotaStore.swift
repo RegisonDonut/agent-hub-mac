@@ -60,12 +60,6 @@ final class QuotaStore: ObservableObject {
         try? accountRepository.save(accounts)
     }
 
-    func setSubscriptionExpiration(accountID: String, date: Date?) {
-        guard let index = accounts.firstIndex(where: { $0.id == accountID }) else { return }
-        accounts[index].subscriptionExpiresAt = date
-        try? accountRepository.save(accounts)
-    }
-
     func removeAccount(accountID: String) {
         accounts.removeAll { $0.id == accountID }
         try? accountRepository.save(accounts)
@@ -81,7 +75,6 @@ final class QuotaStore: ObservableObject {
             if let index = accounts.firstIndex(where: { $0.id == id }) {
                 accounts[index].email = identity.email
                 accounts[index].planName = identity.planName ?? accounts[index].planName
-                accounts[index].subscriptionExpiresAt = identity.subscriptionExpiresAt ?? accounts[index].subscriptionExpiresAt
                 if let quotas { accounts[index].quotas = quotas }
                 accounts[index].lastRefreshedAt = now
                 accounts[index].isCurrent = true
@@ -90,7 +83,6 @@ final class QuotaStore: ObservableObject {
                     provider: provider,
                     email: identity.email,
                     planName: identity.planName,
-                    subscriptionExpiresAt: identity.subscriptionExpiresAt,
                     quotas: quotas ?? [],
                     lastRefreshedAt: now
                 ))

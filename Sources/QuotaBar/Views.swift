@@ -44,11 +44,10 @@ struct StatusLabelView: View {
     var body: some View {
         Image(nsImage: StatusBarImage.make(
             codexRemaining: store.snapshot.codexWeekly?.remainingPercent,
-            claudeRemaining: store.snapshot.claudeSessionForDisplay?.remainingPercent,
-            subscriptionWarning: store.accounts.map { $0.subscriptionWarning() }.max() ?? .none
+            claudeRemaining: store.snapshot.claudeSessionForDisplay?.remainingPercent
         ))
         .renderingMode(.original)
-        .help("Codex 与 Claude Code 额度、订阅到期提醒")
+        .help("Codex 与 Claude Code 额度")
     }
 }
 
@@ -73,11 +72,6 @@ struct QuotaPanelView: View {
                     Text(refreshText).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if store.accounts.contains(where: { $0.subscriptionWarning() != .none }) {
-                    Image(systemName: "exclamationmark.circle.fill")
-                        .foregroundStyle(store.accounts.contains(where: { $0.subscriptionWarning() == .urgent }) ? .red : .orange)
-                        .help("有账号订阅即将到期")
-                }
                 Button {
                     Task { await store.refresh() }
                 } label: {
@@ -195,7 +189,6 @@ struct QuotaPanelView: View {
 
 private struct AccountDashboardView: View {
     @ObservedObject var store: QuotaStore
-    @State private var editingAccount: AccountRecord?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -228,30 +221,19 @@ private struct AccountDashboardView: View {
                 VStack(spacing: 10) {
                     ForEach(store.accounts) { account in
                         AccountCard(account: account) {
-                            editingAccount = account
+                            store.removeAccount(accountID: account.id)
                         }
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .sheet(item: $editingAccount) { account in
-            AccountEditorView(store: store, account: account)
-        }
     }
 }
 
 private struct AccountCard: View {
     let account: AccountRecord
-    let edit: () -> Void
-
-    private var warningColor: Color {
-        switch account.subscriptionWarning() {
-        case .urgent: return .red
-        case .soon: return .orange
-        case .none: return .green
-        }
-    }
+    let delete: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -278,26 +260,16 @@ private struct AccountCard: View {
                     }
                 }
                 Spacer()
-                Circle()
-                    .fill(warningColor)
-                    .frame(width: 8, height: 8)
-                    .shadow(color: warningColor.opacity(0.65), radius: account.subscriptionWarning() == .none ? 0 : 4)
-                    .help(subscriptionText)
-                Button(action: edit) {
-                    Image(systemName: "slider.horizontal.3")
+                Button(role: .destructive, action: delete) {
+                    Image(systemName: "trash")
                 }
                 .buttonStyle(.borderless)
-                .help("设置订阅到期日或删除记录")
+                .help("删除本地账号记录")
             }
 
-            HStack {
-                Label(subscriptionText, systemImage: "calendar.badge.clock")
-                    .foregroundStyle(account.subscriptionWarning() == .urgent ? .red : account.subscriptionWarning() == .soon ? .orange : .secondary)
-                Spacer()
-                Text("记录于 \(account.lastRefreshedAt.formatted(date: .abbreviated, time: .shortened))")
-                    .foregroundStyle(.secondary)
-            }
-            .font(.caption2)
+            Text("记录于 \(account.lastRefreshedAt.formatted(date: .abbreviated, time: .shortened))")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
 
             ForEach(Array(account.quotas.enumerated()), id: \.offset) { _, quota in
                 HistoricalQuotaRow(quota: quota, isCurrent: account.isCurrent)
@@ -306,16 +278,6 @@ private struct AccountCard: View {
         .padding(11)
         .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.09)))
-    }
-
-    private var subscriptionText: String {
-        guard let date = account.subscriptionExpiresAt,
-              let days = account.subscriptionDaysRemaining() else {
-            return "订阅到期日未提供，可手动设置"
-        }
-        if days < 0 { return "订阅已过期 \(-days) 天（\(date.formatted(date: .abbreviated, time: .omitted))）" }
-        if days == 0 { return "订阅今天到期" }
-        return "订阅剩余 \(days) 天（\(date.formatted(date: .abbreviated, time: .omitted))）"
     }
 }
 
@@ -348,53 +310,6 @@ private struct HistoricalQuotaRow: View {
             return isCurrent ? "重置时间已到，等待刷新确认" : "额度应已刷新，可切回此账号确认"
         }
         return "预计 \(reset.formatted(date: .abbreviated, time: .shortened)) 重置"
-    }
-}
-
-private struct AccountEditorView: View {
-    @Environment(\.dismiss) private var dismiss
-    @ObservedObject var store: QuotaStore
-    let account: AccountRecord
-    @State private var hasExpiration: Bool
-    @State private var expirationDate: Date
-
-    init(store: QuotaStore, account: AccountRecord) {
-        self.store = store
-        self.account = account
-        _hasExpiration = State(initialValue: account.subscriptionExpiresAt != nil)
-        _expirationDate = State(initialValue: account.subscriptionExpiresAt ?? Calendar.current.date(byAdding: .month, value: 1, to: Date()) ?? Date())
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("管理账号").font(.title3.bold())
-            Text(account.email).font(.subheadline).textSelection(.enabled)
-            Text("官方本地接口目前不提供订阅账单到期日。这里保存的是你在本机设置的日期，不会上传。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Toggle("记录订阅到期日", isOn: $hasExpiration)
-            if hasExpiration {
-                DatePicker("到期日", selection: $expirationDate, displayedComponents: .date)
-            }
-
-            HStack {
-                Button("删除历史记录", role: .destructive) {
-                    store.removeAccount(accountID: account.id)
-                    dismiss()
-                }
-                Spacer()
-                Button("取消") { dismiss() }
-                Button("保存") {
-                    store.setSubscriptionExpiration(accountID: account.id, date: hasExpiration ? expirationDate : nil)
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-            }
-        }
-        .padding(18)
-        .frame(width: 380)
     }
 }
 

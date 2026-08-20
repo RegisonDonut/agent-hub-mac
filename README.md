@@ -12,7 +12,6 @@ AgentHub 是一个原生 macOS 状态栏应用，也是面向本地 AI Coding Ag
 - 自动记录当前 Claude Code 与 Codex 登录邮箱及套餐类型
 - 本地账号看板：退出或切换账号后仍保留最后额度与重置时间
 - 历史账号到达预计重置时间后提示“可切回确认”
-- 订阅到期日与剩余天数管理，7 天橙色、3 天红色告警
 
 状态栏使用 OpenAI 与 Claude 品牌标识，点击即可展开完整信息。
 
@@ -45,9 +44,7 @@ cd agent-hub-mac
 open dist/AgentHub.app
 ```
 
-AgentHub 不保存或上传凭据。Codex 数据来自本机 `codex app-server`；Claude Code 数据通过 macOS 钥匙串中的既有 OAuth 登录读取 usage 接口。账号邮箱、套餐、订阅到期日以及最后一次额度快照只保存在 `~/Library/Application Support/AgentHub/accounts.json`。
-
-Claude Code 与 Codex 当前提供的本地接口通常不包含账单订阅到期日。AgentHub 会优先读取未来接口中明确提供的订阅到期字段；没有提供时，可在账号看板中手动设置，到期日不会被普通额度刷新覆盖。
+AgentHub 不保存或上传凭据。Codex 数据来自本机 `codex app-server`；Claude Code 数据通过 macOS 钥匙串中的既有 OAuth 登录读取 usage 接口。账号邮箱、套餐以及最后一次额度快照只保存在 `~/Library/Application Support/AgentHub/accounts.json`。
 
 ## Roadmap
 
