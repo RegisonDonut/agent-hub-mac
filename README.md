@@ -24,6 +24,8 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 
 也可以从 [Releases](https://github.com/RegisonDonut/agent-hub-mac/releases/latest) 手动下载安装包。
 
+想先了解功能、安装方式与后续规划，可以打开 [Donut Artifact 分享页](https://d0.getdonut.ai/preview/dcfd02bf-091a-4608-a2e9-513e3649ce24)。该页面已公开，可直接转发给同事。
+
 也可以将本仓库地址交给 Claude Code 或 Codex，并告诉它：
 
 > 请安装并运行这个 macOS 应用，完成后设置为登录时启动。
