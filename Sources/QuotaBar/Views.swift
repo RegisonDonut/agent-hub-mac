@@ -225,16 +225,14 @@ private struct AccountDashboardView: View {
                 .frame(maxWidth: .infinity)
                 .frame(height: 180)
             } else {
-                ScrollView {
-                    LazyVStack(spacing: 10) {
-                        ForEach(store.accounts) { account in
-                            AccountCard(account: account) {
-                                editingAccount = account
-                            }
+                VStack(spacing: 10) {
+                    ForEach(store.accounts) { account in
+                        AccountCard(account: account) {
+                            editingAccount = account
                         }
                     }
                 }
-                .frame(maxHeight: 390)
+                .fixedSize(horizontal: false, vertical: true)
             }
         }
         .sheet(item: $editingAccount) { account in
