@@ -69,6 +69,16 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(account.availability(), .lastKnownAvailable)
     }
 
+    func testProcessRunnerPassesEnvironmentOverrides() async throws {
+        let result = try await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: [],
+            environment: ["AGENTHUB_TEST_PROXY": "socks5h://127.0.0.1:7890"]
+        )
+        let output = try XCTUnwrap(String(data: result.stdout, encoding: .utf8))
+        XCTAssertTrue(output.contains("AGENTHUB_TEST_PROXY=socks5h://127.0.0.1:7890"))
+    }
+
     func testLiveProvidersWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTHUB_LIVE_TESTS"] == "1" else {
             throw XCTSkip("Set AGENTHUB_LIVE_TESTS=1 to exercise local logins")

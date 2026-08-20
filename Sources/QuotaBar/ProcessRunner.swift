@@ -12,12 +12,16 @@ enum ProcessRunner {
         arguments: [String],
         stdin: Data? = nil,
         stdinCloseDelay: TimeInterval = 0,
-        timeout: TimeInterval = 15
+        timeout: TimeInterval = 15,
+        environment: [String: String] = [:]
     ) async throws -> ProcessResult {
         try await withCheckedThrowingContinuation { continuation in
             let process = Process()
             process.executableURL = executable
             process.arguments = arguments
+            if !environment.isEmpty {
+                process.environment = ProcessInfo.processInfo.environment.merging(environment) { _, override in override }
+            }
 
             let outputPipe = Pipe()
             let errorPipe = Pipe()

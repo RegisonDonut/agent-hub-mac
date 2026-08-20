@@ -32,12 +32,14 @@ struct AccountLoginLauncher: Sendable {
         _ = try? await ProcessRunner.run(
             executable: codex,
             arguments: ["logout"],
-            timeout: 20
+            timeout: 20,
+            environment: SystemProxyEnvironment.current()
         )
         let result = try await ProcessRunner.run(
             executable: codex,
             arguments: ["login"],
-            timeout: 10 * 60
+            timeout: 10 * 60,
+            environment: SystemProxyEnvironment.current()
         )
         guard result.exitCode == 0 else {
             throw AccountLoginError.failed("Codex 登录未完成")

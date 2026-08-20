@@ -2,12 +2,54 @@ import Foundation
 
 struct CodexQuotaProvider {
     func fetch() async throws -> CodexQuotaResult {
+        var lastPartial: CodexQuotaResult?
+        var lastError: Error?
+
+        for attempt in 0..<3 {
+            do {
+                let result = try await fetchOnce()
+                if result.weekly != nil {
+                    return CodexQuotaResult(
+                        weekly: result.weekly,
+                        identity: result.identity ?? lastPartial?.identity,
+                        quotaError: nil
+                    )
+                }
+                lastPartial = CodexQuotaResult(
+                    weekly: nil,
+                    identity: result.identity ?? lastPartial?.identity,
+                    quotaError: result.quotaError
+                )
+            } catch let error as QuotaError {
+                if case .notLoggedIn = error { throw error }
+                lastError = error
+            } catch {
+                lastError = error
+            }
+
+            if attempt < 2 {
+                let delay: UInt64 = attempt == 0 ? 600_000_000 : 1_500_000_000
+                try? await Task.sleep(nanoseconds: delay)
+            }
+        }
+
+        if let partial = lastPartial {
+            return CodexQuotaResult(
+                weekly: nil,
+                identity: partial.identity,
+                quotaError: "已重试 3 次：\(partial.quotaError ?? "Codex 额度暂时不可用")"
+            )
+        }
+        throw lastError ?? QuotaError.malformedResponse("Codex")
+    }
+
+    private func fetchOnce() async throws -> CodexQuotaResult {
         guard let codex = ExecutableLocator.find("codex") else {
             throw QuotaError.executableMissing("Codex CLI")
         }
 
         let requests = [
-            #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-hub","title":"AgentHub","version":"1.3.0"},"capabilities":{}}}"#,
+            #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-hub","title":"AgentHub","version":"1.3.1"},"capabilities":{}}}"#,
             #"{"method":"initialized","params":{}}"#,
             #"{"id":2,"method":"account/read","params":{"refreshToken":false}}"#,
             #"{"id":3,"method":"account/rateLimits/read","params":{}}"#
@@ -18,7 +60,8 @@ struct CodexQuotaProvider {
             arguments: ["app-server", "--stdio"],
             stdin: Data(requests.utf8),
             stdinCloseDelay: 5,
-            timeout: 20
+            timeout: 20,
+            environment: SystemProxyEnvironment.current()
         )
         guard result.exitCode == 0 else {
             let detail = String(data: result.stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
