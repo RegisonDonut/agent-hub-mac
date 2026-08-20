@@ -8,7 +8,7 @@ trap 'rm -rf "$work_dir"' EXIT
 
 command -v curl >/dev/null || { echo "需要 curl 才能下载安装包。" >&2; exit 1; }
 
-curl -fL "$release_url" -o "$work_dir/AgentHub-macOS.zip"
+curl --retry 3 --retry-all-errors --connect-timeout 15 -fL "$release_url" -o "$work_dir/AgentHub-macOS.zip"
 ditto -x -k "$work_dir/AgentHub-macOS.zip" "$work_dir/unpacked"
 test -d "$work_dir/unpacked/AgentHub.app" || { echo "安装包内缺少 AgentHub.app。" >&2; exit 1; }
 
