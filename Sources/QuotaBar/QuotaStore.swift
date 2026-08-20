@@ -9,6 +9,7 @@ final class QuotaStore: ObservableObject {
     @Published private(set) var loginStatusMessage: String?
 
     private var refreshTask: Task<Void, Never>?
+    private var loginTask: Task<Void, Never>?
     private let codex = CodexQuotaProvider()
     private let claude = ClaudeQuotaProvider()
     private let accountRepository: AccountHistoryRepository
@@ -71,21 +72,34 @@ final class QuotaStore: ObservableObject {
     func login(to account: AccountRecord) {
         guard !account.isCurrent, loggingInAccountID == nil else { return }
         loggingInAccountID = account.id
-        loginStatusMessage = "正在打开 \(account.provider.displayName) 官方登录页…"
+        loginStatusMessage = "正在打开 \(account.provider.displayName) 官方登录页，请确认账号 \(account.email)…"
 
-        Task { [weak self] in
+        loginTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await loginLauncher.login(to: account)
                 loginStatusMessage = "登录完成，正在刷新账号状态…"
                 await refresh()
                 loginStatusMessage = nil
+            } catch is CancellationError {
+                loginStatusMessage = "已取消登录授权"
+                loggingInAccountID = nil
+                loginTask = nil
+                Task { await self.refresh() }
+                return
             } catch {
                 loginStatusMessage = error.localizedDescription
                 await refresh()
             }
             loggingInAccountID = nil
+            loginTask = nil
         }
+    }
+
+    func cancelLogin() {
+        guard loginTask != nil else { return }
+        loginStatusMessage = "正在取消登录授权…"
+        loginTask?.cancel()
     }
 
     private func recordCurrentAccount(provider: CodingProvider, identity: AccountIdentity?, quotas: [QuotaWindow]?) {

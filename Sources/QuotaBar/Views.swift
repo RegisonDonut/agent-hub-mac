@@ -297,6 +297,7 @@ private struct AccountDashboardView: View {
                             now: now,
                             isLoggingIn: store.loggingInAccountID == account.id,
                             login: { store.login(to: account) },
+                            cancelLogin: { store.cancelLogin() },
                             delete: { store.removeAccount(accountID: account.id) }
                         )
                     }
@@ -340,6 +341,7 @@ private struct AccountCard: View {
     let now: Date
     let isLoggingIn: Bool
     let login: () -> Void
+    let cancelLogin: () -> Void
     let delete: () -> Void
     @State private var isHovering = false
 
@@ -374,6 +376,12 @@ private struct AccountCard: View {
                 AvailabilityBadge(availability: availability)
                 if isLoggingIn {
                     ProgressView().controlSize(.small)
+                    Button(action: cancelLogin) {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.borderless)
+                    .help("取消登录授权")
                 } else if !account.isCurrent {
                     Image(systemName: "arrow.up.forward.app")
                         .foregroundStyle(isHovering ? Color.accentColor : .secondary)
@@ -410,6 +418,10 @@ private struct AccountCard: View {
         }
         .help(account.isCurrent ? "当前登录账号" : "点击后在后台启动官方网页登录")
         .contextMenu {
+            if isLoggingIn {
+                Button("取消登录授权", action: cancelLogin)
+                Divider()
+            }
             Button("删除本地账号记录", role: .destructive, action: delete)
         }
         .animation(.easeOut(duration: 0.12), value: isHovering)

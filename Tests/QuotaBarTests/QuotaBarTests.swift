@@ -79,6 +79,26 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(output.contains("AGENTHUB_TEST_PROXY=socks5h://127.0.0.1:7890"))
     }
 
+    func testProcessRunnerCancellationReturnsPromptly() async throws {
+        let startedAt = Date()
+        let task = Task {
+            try await ProcessRunner.run(
+                executable: URL(fileURLWithPath: "/bin/sleep"),
+                arguments: ["30"],
+                timeout: 60
+            )
+        }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        task.cancel()
+
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            XCTAssertLessThan(Date().timeIntervalSince(startedAt), 2)
+        }
+    }
+
     func testLiveProvidersWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTHUB_LIVE_TESTS"] == "1" else {
             throw XCTSkip("Set AGENTHUB_LIVE_TESTS=1 to exercise local logins")
