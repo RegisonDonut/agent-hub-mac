@@ -5,11 +5,14 @@ final class QuotaStore: ObservableObject {
     @Published private(set) var snapshot = QuotaSnapshot.empty
     @Published private(set) var isRefreshing = false
     @Published private(set) var accounts: [AccountRecord]
+    @Published private(set) var loggingInAccountID: String?
+    @Published private(set) var loginStatusMessage: String?
 
     private var refreshTask: Task<Void, Never>?
     private let codex = CodexQuotaProvider()
     private let claude = ClaudeQuotaProvider()
     private let accountRepository: AccountHistoryRepository
+    private let loginLauncher = AccountLoginLauncher()
 
     init(accountRepository: AccountHistoryRepository = AccountHistoryRepository()) {
         self.accountRepository = accountRepository
@@ -63,6 +66,26 @@ final class QuotaStore: ObservableObject {
     func removeAccount(accountID: String) {
         accounts.removeAll { $0.id == accountID }
         try? accountRepository.save(accounts)
+    }
+
+    func login(to account: AccountRecord) {
+        guard !account.isCurrent, loggingInAccountID == nil else { return }
+        loggingInAccountID = account.id
+        loginStatusMessage = "正在打开 \(account.provider.displayName) 官方登录页…"
+
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await loginLauncher.login(to: account)
+                loginStatusMessage = "登录完成，正在刷新账号状态…"
+                await refresh()
+                loginStatusMessage = nil
+            } catch {
+                loginStatusMessage = error.localizedDescription
+                await refresh()
+            }
+            loggingInAccountID = nil
+        }
     }
 
     private func recordCurrentAccount(provider: CodingProvider, identity: AccountIdentity?, quotas: [QuotaWindow]?) {

@@ -27,7 +27,7 @@ enum StatusBarImage {
         let fillWidth = max(0, (width - 4) * CGFloat(clamped / 100))
         if fillWidth > 0 {
             let fill = NSBezierPath(roundedRect: NSRect(x: x + 2, y: y + 2, width: fillWidth, height: height - 4), xRadius: 1.5, yRadius: 1.5)
-            quotaColor(for: remaining).setFill()
+            quotaColor(for: remaining).withAlphaComponent(0.62).setFill()
             fill.fill()
         }
 

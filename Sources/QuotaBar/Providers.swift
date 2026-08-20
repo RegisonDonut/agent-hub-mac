@@ -7,7 +7,7 @@ struct CodexQuotaProvider {
         }
 
         let requests = [
-            #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-hub","title":"AgentHub","version":"1.2.0"},"capabilities":{}}}"#,
+            #"{"id":1,"method":"initialize","params":{"clientInfo":{"name":"agent-hub","title":"AgentHub","version":"1.3.0"},"capabilities":{}}}"#,
             #"{"method":"initialized","params":{}}"#,
             #"{"id":2,"method":"account/read","params":{"refreshToken":false}}"#,
             #"{"id":3,"method":"account/rateLimits/read","params":{}}"#

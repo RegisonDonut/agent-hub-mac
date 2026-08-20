@@ -7,7 +7,7 @@ struct BatteryGauge: View {
     var muted = false
 
     private var color: Color {
-        if muted { return .secondary.opacity(0.65) }
+        if muted { return .secondary }
         guard let remaining else { return .secondary }
         if remaining < 20 { return .red }
         if remaining < 50 { return .orange }
@@ -25,7 +25,7 @@ struct BatteryGauge: View {
                 .strokeBorder(.primary.opacity(0.65), lineWidth: 1)
             GeometryReader { geometry in
                 RoundedRectangle(cornerRadius: compact ? 1.5 : 3)
-                    .fill(color)
+                    .fill(color.opacity(muted ? 0.45 : 0.62))
                     .frame(width: max(0, (geometry.size.width - 4) * ((remaining ?? 0) / 100)))
                     .padding(2)
             }
@@ -239,6 +239,12 @@ private struct AccountDashboardView: View {
                     .foregroundStyle(.green)
             }
 
+            if let message = store.loginStatusMessage {
+                Label(message, systemImage: store.loggingInAccountID == nil ? "exclamationmark.triangle.fill" : "person.crop.circle.badge.clock")
+                    .font(.caption)
+                    .foregroundStyle(store.loggingInAccountID == nil ? .orange : .secondary)
+            }
+
             HStack(spacing: 8) {
                 Picker("平台", selection: $providerFilter) {
                     ForEach(ProviderFilter.allCases, id: \.self) { filter in
@@ -286,9 +292,13 @@ private struct AccountDashboardView: View {
             } else {
                 VStack(spacing: 10) {
                     ForEach(visibleAccounts) { account in
-                        AccountCard(account: account, now: now) {
-                            store.removeAccount(accountID: account.id)
-                        }
+                        AccountCard(
+                            account: account,
+                            now: now,
+                            isLoggingIn: store.loggingInAccountID == account.id,
+                            login: { store.login(to: account) },
+                            delete: { store.removeAccount(accountID: account.id) }
+                        )
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
@@ -328,9 +338,13 @@ private struct AccountDashboardView: View {
 private struct AccountCard: View {
     let account: AccountRecord
     let now: Date
+    let isLoggingIn: Bool
+    let login: () -> Void
     let delete: () -> Void
+    @State private var isHovering = false
 
     private var availability: AccountAvailability { account.availability(now: now) }
+    private var canLogin: Bool { !account.isCurrent && !isLoggingIn }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 9) {
@@ -358,11 +372,12 @@ private struct AccountCard: View {
                 }
                 Spacer()
                 AvailabilityBadge(availability: availability)
-                Button(role: .destructive, action: delete) {
-                    Image(systemName: "trash")
+                if isLoggingIn {
+                    ProgressView().controlSize(.small)
+                } else if !account.isCurrent {
+                    Image(systemName: "arrow.up.forward.app")
+                        .foregroundStyle(isHovering ? Color.accentColor : .secondary)
                 }
-                .buttonStyle(.borderless)
-                .help("删除本地账号记录")
             }
 
             Text(statusDetail)
@@ -378,8 +393,26 @@ private struct AccountCard: View {
             }
         }
         .padding(11)
-        .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(.primary.opacity(0.09)))
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .background(isHovering && canLogin ? Color.accentColor.opacity(0.09) : .primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 10))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(isHovering && canLogin ? Color.accentColor : .primary.opacity(0.09), lineWidth: isHovering && canLogin ? 1.5 : 1))
+        .onTapGesture {
+            if canLogin { login() }
+        }
+        .onHover { inside in
+            guard canLogin, inside != isHovering else { return }
+            isHovering = inside
+            if inside { NSCursor.pointingHand.push() }
+            else { NSCursor.pop() }
+        }
+        .onDisappear {
+            if isHovering { NSCursor.pop() }
+        }
+        .help(account.isCurrent ? "当前登录账号" : "点击后在后台启动官方网页登录")
+        .contextMenu {
+            Button("删除本地账号记录", role: .destructive, action: delete)
+        }
+        .animation(.easeOut(duration: 0.12), value: isHovering)
     }
 
     private var statusDetail: String {

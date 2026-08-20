@@ -15,6 +15,8 @@ AgentHub 是一个原生 macOS 状态栏应用，也是面向本地 AI Coding Ag
 - 历史额度明确标记为“上次记录”并降灰，不冒充实时状态
 - 按 Claude Code / Codex、可用状态和邮箱筛选账号
 - 当前账号、预计已刷新账号和等待重置账号自动排序
+- 历史账号卡片悬停高亮，点击后由 AgentHub 在后台启动官方网页登录
+- 登录成功后自动刷新看板，全程不打开 Terminal
 
 状态栏使用 OpenAI 与 Claude 品牌标识，点击即可展开完整信息。
 
@@ -49,7 +51,7 @@ open dist/AgentHub.app
 
 AgentHub 不保存或上传凭据。Codex 数据来自本机 `codex app-server`；Claude Code 数据通过 macOS 钥匙串中的既有 OAuth 登录读取 usage 接口。账号邮箱、套餐以及最后一次额度快照只保存在 `~/Library/Application Support/AgentHub/accounts.json`。
 
-AgentHub 不复制、保存或回写 Claude Code / Codex 的 access token 或 refresh token。账号切换应通过各自官方登录与退出流程完成，避免令牌轮换冲突和账号安全风险。
+AgentHub 不复制、保存或回写 Claude Code / Codex 的 access token 或 refresh token。点击历史账号时，App 只在后台调用官方 CLI 登录命令并等待浏览器授权完成；Claude Code 会预填历史邮箱，Codex 由官方网页选择账号。
 
 ## Roadmap
 
