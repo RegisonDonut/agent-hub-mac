@@ -22,7 +22,7 @@ struct CodexQuotaProvider {
             let detail = String(data: result.stderr, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines)
             throw QuotaError.processFailed(detail?.isEmpty == false ? detail! : "Codex app-server 执行失败")
         }
-        if ProcessInfo.processInfo.environment["QUOTABAR_DEBUG"] == "1" {
+        if ProcessInfo.processInfo.environment["AGENTHUB_DEBUG"] == "1" {
             print(String(data: result.stdout, encoding: .utf8) ?? "<non-UTF8 Codex output>")
         }
 

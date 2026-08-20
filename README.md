@@ -20,6 +20,10 @@ AgentHub 是一个原生 macOS 状态栏应用，也是面向本地 AI Coding Ag
 curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scripts/install.sh | bash
 ```
 
+该命令会下载同时支持 Apple Silicon 与 Intel Mac 的最新 Release，安装到 `~/Applications` 并启动。
+
+也可以从 [Releases](https://github.com/RegisonDonut/agent-hub-mac/releases/latest) 手动下载安装包。
+
 也可以将本仓库地址交给 Claude Code 或 Codex，并告诉它：
 
 > 请安装并运行这个 macOS 应用，完成后设置为登录时启动。

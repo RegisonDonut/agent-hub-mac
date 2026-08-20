@@ -27,8 +27,8 @@ final class AgentHubTests: XCTestCase {
     }
 
     func testLiveProvidersWhenEnabled() async throws {
-        guard ProcessInfo.processInfo.environment["QUOTABAR_LIVE_TESTS"] == "1" else {
-            throw XCTSkip("Set QUOTABAR_LIVE_TESTS=1 to exercise local logins")
+        guard ProcessInfo.processInfo.environment["AGENTHUB_LIVE_TESTS"] == "1" else {
+            throw XCTSkip("Set AGENTHUB_LIVE_TESTS=1 to exercise local logins")
         }
         let codex = try await CodexQuotaProvider().fetch()
         let claude = try await ClaudeQuotaProvider().fetch()
