@@ -17,6 +17,7 @@ AgentHub 是一个原生 macOS 状态栏应用，也是面向本地 AI Coding Ag
 - 当前账号、预计已刷新账号和等待重置账号自动排序
 - 历史账号卡片悬停高亮，点击后由 AgentHub 在后台启动官方网页登录
 - Claude Code 切换前先退出本地旧会话，并在授权后校验实际登录邮箱
+- Claude Code 登录在隐藏 PTY 中运行，确保网页授权结果能够自动回调 CLI
 - 登录授权可随时取消，关闭网页后也不会无限停留在“登录授权中”
 - 登录成功后自动刷新看板，全程不打开 Terminal
 - 自动把 macOS 系统 SOCKS/HTTPS 代理传给 Codex 后台进程

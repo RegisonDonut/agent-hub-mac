@@ -1,6 +1,9 @@
 import Foundation
+import OSLog
 
 struct AccountLoginLauncher: Sendable {
+    private static let logger = Logger(subsystem: "com.regisondonut.AgentHub", category: "AccountLogin")
+
     func login(to account: AccountRecord) async throws {
         switch account.provider {
         case .claudeCode:
@@ -22,13 +25,20 @@ struct AccountLoginLauncher: Sendable {
         )
         try Task.checkCancellation()
 
-        let result = try await ProcessRunner.run(
+        Self.logger.notice("Starting Claude Code login in a hidden pseudo-terminal")
+        let result = try await ProcessRunner.runInPseudoTerminal(
             executable: claude,
             arguments: ["auth", "login", "--claudeai", "--email", email],
-            timeout: 3 * 60
+            timeout: 3 * 60,
+            environment: [
+                "NO_PROXY": "localhost,127.0.0.1,::1",
+                "no_proxy": "localhost,127.0.0.1,::1"
+            ]
         )
         try Task.checkCancellation()
+        Self.logger.notice("Claude Code login process exited with status \(result.exitCode)")
         guard result.exitCode == 0 else {
+            Self.logger.error("Claude Code login did not complete")
             throw AccountLoginError.failed("Claude Code 登录未完成")
         }
 
@@ -42,11 +52,14 @@ struct AccountLoginLauncher: Sendable {
               let json = try? JSONSerialization.jsonObject(with: status.stdout) as? [String: Any],
               let actualEmail = json["email"] as? String,
               !actualEmail.isEmpty else {
+            Self.logger.error("Claude Code login returned success but auth status is not logged in")
             throw AccountLoginError.failed("Claude Code 已授权，但无法确认登录账号")
         }
         guard actualEmail.caseInsensitiveCompare(email) == .orderedSame else {
+            Self.logger.error("Claude Code login completed with an unexpected account")
             throw AccountLoginError.accountMismatch(expected: email, actual: actualEmail)
         }
+        Self.logger.notice("Claude Code login and account verification completed")
     }
 
     private func loginCodex() async throws {

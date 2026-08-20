@@ -7,6 +7,39 @@ struct ProcessResult: Sendable {
 }
 
 enum ProcessRunner {
+    static func runInPseudoTerminal(
+        executable: URL,
+        arguments: [String],
+        timeout: TimeInterval,
+        environment: [String: String] = [:]
+    ) async throws -> ProcessResult {
+        let wrapper = #"""
+        parent_pid=$PPID
+        /usr/bin/script -q /dev/null "$@" &
+        child_pid=$!
+        cleanup() {
+          kill -TERM "$child_pid" 2>/dev/null || true
+          wait "$child_pid" 2>/dev/null || true
+        }
+        trap 'cleanup; trap - EXIT; exit 143' TERM INT HUP
+        trap cleanup EXIT
+        while kill -0 "$child_pid" 2>/dev/null; do
+          if ! kill -0 "$parent_pid" 2>/dev/null; then exit 143; fi
+          sleep 0.25
+        done
+        wait "$child_pid"
+        child_exit_code=$?
+        trap - TERM INT HUP EXIT
+        exit "$child_exit_code"
+        """#
+        return try await run(
+            executable: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-c", wrapper, "agenthub-pty", executable.path] + arguments,
+            timeout: timeout,
+            environment: environment
+        )
+    }
+
     static func run(
         executable: URL,
         arguments: [String],

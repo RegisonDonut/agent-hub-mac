@@ -99,6 +99,33 @@ final class AgentHubTests: XCTestCase {
         }
     }
 
+    func testPseudoTerminalRunnerProvidesTTY() async throws {
+        let result = try await ProcessRunner.runInPseudoTerminal(
+            executable: URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "test -t 0 && test -t 1"],
+            timeout: 5
+        )
+        XCTAssertEqual(result.exitCode, 0)
+    }
+
+    func testPseudoTerminalRunnerCanBeCancelled() async throws {
+        let task = Task {
+            try await ProcessRunner.runInPseudoTerminal(
+                executable: URL(fileURLWithPath: "/bin/sleep"),
+                arguments: ["30"],
+                timeout: 60
+            )
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation")
+        } catch is CancellationError {
+            // Expected: cancellation propagates through the hidden PTY wrapper.
+        }
+    }
+
     func testLiveProvidersWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTHUB_LIVE_TESTS"] == "1" else {
             throw XCTSkip("Set AGENTHUB_LIVE_TESTS=1 to exercise local logins")
