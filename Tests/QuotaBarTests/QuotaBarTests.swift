@@ -74,11 +74,33 @@ final class AgentHubTests: XCTestCase {
         let compose = Sub2APIServiceManager.composeFile
         XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.1.179")
         XCTAssertTrue(compose.contains("weishaw/sub2api:${SUB2API_VERSION}"))
-        XCTAssertTrue(compose.contains("${BIND_HOST}:${SERVER_PORT}:8080"))
+        XCTAssertTrue(compose.contains("127.0.0.1:${SERVER_PORT}:8080"))
+        XCTAssertFalse(compose.contains("0.0.0.0:${SERVER_PORT}:8080"))
         XCTAssertTrue(compose.contains("RUN_MODE: \"${RUN_MODE}\""))
         XCTAssertFalse(compose.contains("5432:5432"))
         XCTAssertFalse(compose.contains("6379:6379"))
         XCTAssertTrue(compose.contains("no-new-privileges:true"))
+
+        let safe = Data(#"{"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"18080"}]}"#.utf8)
+        let exposed = Data(#"{"8080/tcp":[{"HostIp":"0.0.0.0","HostPort":"18080"}]}"#.utf8)
+        let unexpectedPort = Data(#"{"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}]}"#.utf8)
+        XCTAssertTrue(Sub2APIServiceManager.portBindingsAreLoopbackOnly(safe))
+        XCTAssertFalse(Sub2APIServiceManager.portBindingsAreLoopbackOnly(exposed))
+        XCTAssertFalse(Sub2APIServiceManager.portBindingsAreLoopbackOnly(unexpectedPort))
+    }
+
+    @MainActor
+    func testLiveSub2APIAutoAdminSessionWhenEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["AGENTHUB_SUB2API_LIVE_TESTS"] == "1" else {
+            throw XCTSkip("Set AGENTHUB_SUB2API_LIVE_TESTS=1 to exercise the local Sub2API login")
+        }
+        let service = Sub2APIServiceManager()
+        await service.startService()
+        XCTAssertTrue(service.state.isRunning)
+        let session = try await service.createAdminWebSession()
+        XCTAssertFalse(session.accessToken.isEmpty)
+        XCTAssertFalse(session.refreshToken.isEmpty)
+        XCTAssertTrue(session.bootstrapJavaScript.contains("window.location.replace('/admin/accounts')"))
     }
 
     func testProcessRunnerPassesEnvironmentOverrides() async throws {

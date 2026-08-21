@@ -16,6 +16,7 @@ struct Sub2APIManagerView: View {
                 riskNotice
             } else if service.state.isRunning {
                 Sub2APIWebView(
+                    service: service,
                     url: service.baseURL.appendingPathComponent("admin/accounts"),
                     reloadToken: reloadToken
                 )
@@ -55,16 +56,9 @@ struct Sub2APIManagerView: View {
                     Label("刷新页面", systemImage: "arrow.clockwise")
                 }
 
-                Button {
-                    NSWorkspace.shared.open(service.baseURL)
-                } label: {
-                    Label("浏览器打开", systemImage: "safari")
-                }
             }
 
             Menu {
-                Button("复制管理员密码") { service.copyAdminPassword() }
-                    .disabled(service.adminPassword.isEmpty)
                 Button("显示本地数据目录") { service.revealDataDirectory() }
                 Divider()
                 Button("重启本地服务") {
@@ -149,10 +143,11 @@ struct Sub2APIManagerView: View {
 }
 
 private struct Sub2APIWebView: NSViewRepresentable {
+    let service: Sub2APIServiceManager
     let url: URL
     let reloadToken: UUID
 
-    func makeCoordinator() -> Coordinator { Coordinator() }
+    func makeCoordinator() -> Coordinator { Coordinator(service: service) }
 
     func makeNSView(context: Context) -> WKWebView {
         let configuration = WKWebViewConfiguration()
@@ -174,7 +169,36 @@ private struct Sub2APIWebView: NSViewRepresentable {
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
+        private let service: Sub2APIServiceManager
+        private var isEstablishingSession = false
         var lastReloadToken = UUID()
+
+        init(service: Sub2APIServiceManager) {
+            self.service = service
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard webView.url?.path == "/login", !isEstablishingSession else { return }
+            isEstablishingSession = true
+            Task { @MainActor [weak self, weak webView] in
+                guard let self, let webView else { return }
+                do {
+                    let session = try await service.createAdminWebSession()
+                    _ = try await webView.evaluateJavaScript(session.bootstrapJavaScript)
+                    isEstablishingSession = false
+                } catch {
+                    isEstablishingSession = false
+                    let message = error.localizedDescription
+                        .replacingOccurrences(of: "&", with: "&amp;")
+                        .replacingOccurrences(of: "<", with: "&lt;")
+                        .replacingOccurrences(of: ">", with: "&gt;")
+                    webView.loadHTMLString(
+                        "<main style='font:16px -apple-system;padding:40px'><h2>无法进入本地管理器</h2><p>\(message)</p><p>请点击上方刷新按钮重试。</p></main>",
+                        baseURL: service.baseURL
+                    )
+                }
+            }
+        }
 
         func webView(
             _ webView: WKWebView,

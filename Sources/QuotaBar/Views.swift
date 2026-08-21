@@ -92,15 +92,28 @@ struct QuotaPanelView: View {
                 Button {
                     openWindow(id: "sub2api-manager")
                 } label: {
-                    HStack(spacing: 5) {
+                    HStack(spacing: 7) {
                         Circle()
                             .fill(sub2API.state.isRunning ? Color.green : Color.secondary)
                             .frame(width: 6, height: 6)
-                        Text("Sub2API")
+                        VStack(alignment: .leading, spacing: 0) {
+                            Text("Subscribe to API")
+                                .font(.caption.bold())
+                            Text(sub2API.state.title)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.horizontal, 9)
+                    .padding(.vertical, 5)
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 7))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 7)
+                            .stroke(Color(nsColor: .separatorColor).opacity(0.6), lineWidth: 0.5)
                     }
                 }
-                .buttonStyle(.borderless)
-                .help("打开本地 Codex 订阅管理器")
+                .buttonStyle(.plain)
+                .help("直接进入本地 Codex 订阅账号页面")
                 Button {
                     Task { await store.refresh() }
                 } label: {

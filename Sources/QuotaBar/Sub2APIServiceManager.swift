@@ -2,6 +2,33 @@ import AppKit
 import Foundation
 import Security
 
+struct Sub2APIWebSession {
+    let accessToken: String
+    let refreshToken: String
+    let expiresAtMilliseconds: Int64
+    let userJSON: String
+
+    var bootstrapJavaScript: String {
+        """
+        (() => {
+          localStorage.setItem('auth_token', \(Self.javaScriptLiteral(accessToken)));
+          localStorage.setItem('refresh_token', \(Self.javaScriptLiteral(refreshToken)));
+          localStorage.setItem('token_expires_at', '\(expiresAtMilliseconds)');
+          localStorage.setItem('auth_user', \(Self.javaScriptLiteral(userJSON)));
+          window.location.replace('/admin/accounts');
+        })();
+        """
+    }
+
+    private static func javaScriptLiteral(_ value: String) -> String {
+        guard let data = try? JSONEncoder().encode(value),
+              let encoded = String(data: data, encoding: .utf8) else {
+            return "''"
+        }
+        return encoded
+    }
+}
+
 enum Sub2APIServiceState: Equatable {
     case stopped
     case starting(String)
@@ -85,6 +112,7 @@ final class Sub2APIServiceManager: ObservableObject {
             do {
                 try ensureConfiguration()
                 _ = try await runDocker(composeArguments(["up", "-d", "--remove-orphans", "--force-recreate"]), timeout: 600)
+                try await enforceLoopbackBinding()
                 try await waitUntilHealthy(timeout: 180)
                 state = .running
             } catch {
@@ -114,21 +142,59 @@ final class Sub2APIServiceManager: ObservableObject {
 
     func refreshState() async {
         if await isHealthy() {
-            state = .running
+            do {
+                try await enforceLoopbackBinding()
+                state = .running
+            } catch {
+                state = .failed(error.localizedDescription)
+            }
         } else if state.isRunning {
             state = .stopped
         }
         lastCheckedAt = Date()
     }
 
-    func revealDataDirectory() {
-        NSWorkspace.shared.activateFileViewerSelecting([supportDirectory])
+    func createAdminWebSession() async throws -> Sub2APIWebSession {
+        guard !adminEmail.isEmpty, !adminPassword.isEmpty else {
+            throw QuotaError.processFailed("本地管理员凭据尚未准备完成")
+        }
+
+        var request = URLRequest(url: baseURL.appendingPathComponent("api/v1/auth/login"))
+        request.httpMethod = "POST"
+        request.timeoutInterval = 10
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: [
+            "email": adminEmail,
+            "password": adminPassword
+        ])
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (envelope["code"] as? Int) == 0,
+              let payload = envelope["data"] as? [String: Any],
+              let accessToken = payload["access_token"] as? String,
+              let refreshToken = payload["refresh_token"] as? String,
+              let user = payload["user"] as? [String: Any] else {
+            throw QuotaError.processFailed("无法建立本地 Sub2API 管理会话")
+        }
+
+        let expiresIn = (payload["expires_in"] as? NSNumber)?.doubleValue ?? 3_600
+        let expiresAt = Int64((Date().timeIntervalSince1970 + expiresIn) * 1_000)
+        let userData = try JSONSerialization.data(withJSONObject: user)
+        guard let userJSON = String(data: userData, encoding: .utf8) else {
+            throw QuotaError.processFailed("无法读取本地管理员资料")
+        }
+        return Sub2APIWebSession(
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            expiresAtMilliseconds: expiresAt,
+            userJSON: userJSON
+        )
     }
 
-    func copyAdminPassword() {
-        guard !adminPassword.isEmpty else { return }
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(adminPassword, forType: .string)
+    func revealDataDirectory() {
+        NSWorkspace.shared.activateFileViewerSelecting([supportDirectory])
     }
 
     private func performStart() async {
@@ -136,6 +202,7 @@ final class Sub2APIServiceManager: ObservableObject {
         do {
             try ensureConfiguration()
             if await isHealthy() {
+                try await enforceLoopbackBinding()
                 state = .running
                 return
             }
@@ -151,6 +218,7 @@ final class Sub2APIServiceManager: ObservableObject {
 
             state = .starting("首次运行可能需要下载本地服务镜像…")
             _ = try await runDocker(composeArguments(["up", "-d", "--remove-orphans"]), timeout: 900)
+            try await enforceLoopbackBinding()
             state = .starting("正在等待数据库迁移和服务就绪…")
             try await waitUntilHealthy(timeout: 180)
             state = .running
@@ -174,7 +242,6 @@ final class Sub2APIServiceManager: ObservableObject {
             let totpKey = try secureRandomHex(byteCount: 32)
             let contents = """
             SUB2API_VERSION=\(Self.pinnedVersion)
-            BIND_HOST=127.0.0.1
             SERVER_PORT=\(Self.hostPort)
             RUN_MODE=simple
             SIMPLE_MODE_CONFIRM=true
@@ -303,6 +370,38 @@ final class Sub2APIServiceManager: ObservableObject {
         throw QuotaError.processFailed("Sub2API 在 \(Int(timeout)) 秒内未能启动，请查看服务日志")
     }
 
+    private func enforceLoopbackBinding() async throws {
+        let result = try await runDocker([
+            "inspect", "--format", "{{json .HostConfig.PortBindings}}", "agenthub-sub2api"
+        ], timeout: 15)
+        guard Self.portBindingsAreLoopbackOnly(result.stdout) else {
+            _ = try? await runDocker(["stop", "agenthub-sub2api"], timeout: 30)
+            throw QuotaError.processFailed("安全拦截：检测到 Sub2API 端口并非仅绑定本机，服务已自动停止")
+        }
+    }
+
+    static func portBindingsAreLoopbackOnly(_ data: Data) -> Bool {
+        struct Binding: Decodable {
+            let hostIP: String
+            let hostPort: String
+
+            enum CodingKeys: String, CodingKey {
+                case hostIP = "HostIp"
+                case hostPort = "HostPort"
+            }
+        }
+
+        guard let bindings = try? JSONDecoder().decode([String: [Binding]].self, from: data),
+              bindings.count == 1,
+              let httpBindings = bindings["8080/tcp"],
+              httpBindings.count == 1,
+              let binding = httpBindings.first else {
+            return false
+        }
+        return (binding.hostIP == "127.0.0.1" || binding.hostIP == "::1") &&
+            binding.hostPort == String(hostPort)
+    }
+
     private func secureRandomHex(byteCount: Int) throws -> String {
         try secureRandomData(byteCount: byteCount).map { String(format: "%02x", $0) }.joined()
     }
@@ -332,7 +431,7 @@ final class Sub2APIServiceManager: ObservableObject {
         security_opt:
           - no-new-privileges:true
         ports:
-          - "${BIND_HOST}:${SERVER_PORT}:8080"
+          - "127.0.0.1:${SERVER_PORT}:8080"
         volumes:
           - sub2api_data:/app/data
         environment:
