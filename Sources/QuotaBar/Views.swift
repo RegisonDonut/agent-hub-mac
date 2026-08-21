@@ -73,6 +73,8 @@ private enum AvailabilityFilter: String, CaseIterable {
 
 struct QuotaPanelView: View {
     @ObservedObject var store: QuotaStore
+    @ObservedObject var sub2API: Sub2APIServiceManager
+    @Environment(\.openWindow) private var openWindow
     @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
     @State private var selectedTab = PanelTab.status
 
@@ -87,6 +89,18 @@ struct QuotaPanelView: View {
                     Text(refreshText).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
+                Button {
+                    openWindow(id: "sub2api-manager")
+                } label: {
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(sub2API.state.isRunning ? Color.green : Color.secondary)
+                            .frame(width: 6, height: 6)
+                        Text("Sub2API")
+                    }
+                }
+                .buttonStyle(.borderless)
+                .help("打开本地 Codex 订阅管理器")
                 Button {
                     Task { await store.refresh() }
                 } label: {

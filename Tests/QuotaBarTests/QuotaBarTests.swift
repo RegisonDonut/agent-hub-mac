@@ -69,6 +69,18 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(account.availability(), .lastKnownAvailable)
     }
 
+    @MainActor
+    func testSub2APIStackIsPinnedAndLocalOnly() {
+        let compose = Sub2APIServiceManager.composeFile
+        XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.1.179")
+        XCTAssertTrue(compose.contains("weishaw/sub2api:${SUB2API_VERSION}"))
+        XCTAssertTrue(compose.contains("${BIND_HOST}:${SERVER_PORT}:8080"))
+        XCTAssertTrue(compose.contains("RUN_MODE: \"${RUN_MODE}\""))
+        XCTAssertFalse(compose.contains("5432:5432"))
+        XCTAssertFalse(compose.contains("6379:6379"))
+        XCTAssertTrue(compose.contains("no-new-privileges:true"))
+    }
+
     func testProcessRunnerPassesEnvironmentOverrides() async throws {
         let result = try await ProcessRunner.run(
             executable: URL(fileURLWithPath: "/usr/bin/env"),

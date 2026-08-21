@@ -23,6 +23,10 @@ AgentHub 是一个原生 macOS 状态栏应用，也是面向本地 AI Coding Ag
 - 登录成功后自动刷新看板，全程不打开 Terminal
 - 自动把 macOS 系统 SOCKS/HTTPS 代理传给 Codex 后台进程
 - Codex 额度请求失败时自动进行三次退避重试
+- App 启动时自动启动本机 Sub2API、PostgreSQL 与 Redis 服务
+- 内嵌 Sub2API Codex 管理后台，支持添加多个订阅账号和生成本地 API Key
+- Sub2API 仅监听 `127.0.0.1:18080`，数据库与 Redis 不暴露宿主机端口
+- 固定使用 Sub2API `v0.1.179`，服务数据保存在 Docker 命名卷中
 
 状态栏使用 OpenAI 与 Claude 品牌标识，点击即可展开完整信息。
 
@@ -46,7 +50,7 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 
 ## 从源码构建
 
-要求 macOS 13 或更高版本、Swift 5.9 或更高版本，并已登录本机 Codex CLI 与 Claude Code。
+要求 macOS 13 或更高版本、Swift 5.9 或更高版本，并已登录本机 Codex CLI 与 Claude Code。使用 Sub2API 管理器还需要安装并启动 Docker Desktop。
 
 ```bash
 git clone https://github.com/RegisonDonut/agent-hub-mac.git
@@ -55,13 +59,29 @@ cd agent-hub-mac
 open dist/AgentHub.app
 ```
 
-AgentHub 不保存或上传凭据。Codex 数据来自本机 `codex app-server`；Claude Code 数据通过 macOS 钥匙串中的既有 OAuth 登录读取 usage 接口。账号邮箱、套餐以及最后一次额度快照只保存在 `~/Library/Application Support/AgentHub/accounts.json`。
+Codex 状态数据来自本机 `codex app-server`；Claude Code 数据通过 macOS 钥匙串中的既有 OAuth 登录读取 usage 接口。账号邮箱、套餐以及最后一次额度快照只保存在 `~/Library/Application Support/AgentHub/accounts.json`。
 
 AgentHub 不复制、保存或回写 Claude Code / Codex 的 access token 或 refresh token。点击历史账号时，App 只在后台调用官方 CLI 登录命令并等待浏览器授权完成；Claude Code 会先退出本地旧会话、预填历史邮箱。当前 Claude CLI 可能要求把网页显示的一次性登录代码粘贴回 CLI，AgentHub 会在卡片中提供输入框并直接转交给等待中的官方进程，随后核对实际邮箱。Codex 由官方网页选择账号。授权过程最长等待 5 分钟，也可以直接点击卡片右上角的取消按钮。
 
+## 本地 Sub2API 管理器
+
+AgentHub 1.4 起可以托管一个仅供本机使用的 Sub2API 栈。首次启动会下载固定版本的 Sub2API、PostgreSQL 和 Redis 镜像，并生成独立的管理员密码、数据库密码、JWT 密钥和 TOTP 密钥。编排文件与密钥文件位于：
+
+```text
+~/Library/Application Support/AgentHub/Sub2API/
+```
+
+容器数据保存在 Docker 命名卷 `agenthub-sub2api_*` 中。打开状态栏面板并点击 `Sub2API` 即可进入 App 内管理窗口；管理员邮箱为 `admin@agenthub.local`，密码可从窗口右上角菜单复制。本地 Responses API 地址为：
+
+```text
+http://127.0.0.1:18080/v1/responses
+```
+
+> 风险提示：Sub2API 会把通过其管理后台添加的 OAuth access token 和 refresh token 原样保存在本地 PostgreSQL 中，并通过 ChatGPT 的 Codex backend 转发订阅流量。这不是 OpenAI 公布的通用订阅 API，可能违反上游条款并导致账号受限。请只添加属于自己的账号，不要公开本地端口或向他人分发 API Key。原有 AgentHub 官方 CLI 登录流程仍不会读取或保存 Token；只有你主动添加到 Sub2API 的账号才会进入其本地数据库。
+
 ## Roadmap
 
-- 多账号登录与快速切换
+- 将 Sub2API 账号、额度和调度状态逐步原生化到 AgentHub 界面
 - 本地会话、模型和配置管理
 - Agent 健康检查与常见问题修复
 - 统一的使用量、成本与权限中心
