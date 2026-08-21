@@ -77,6 +77,15 @@ AgentHub 1.4 起可以托管一个仅供本机使用的 Sub2API 栈。首次启�
 http://127.0.0.1:18080/v1/responses
 ```
 
+本机 Codex 可以用独立 profile 接入，不影响默认的 ChatGPT/Codex 登录：
+
+```bash
+codex --profile sub2api
+codex --profile sub2api exec "检查这个项目"
+```
+
+中转 API Key 保存在 macOS 钥匙串，`~/.codex/config.toml` 只声明 `agenthub_sub2api` provider，`~/.codex/sub2api.config.toml` 负责选择该 provider。Codex 通过本地凭据辅助脚本读取 Key，配置文件中不保存 Key 明文。
+
 Docker 端口固定绑定到 loopback，PostgreSQL 与 Redis 完全不发布宿主机端口。AgentHub 启动服务时会验证一次 Docker 的实际绑定；如果发现 Sub2API 被改为 `0.0.0.0`、局域网地址或其他非本机绑定，会立即停止容器并显示安全错误。每次启动还会把编排文件恢复为内置安全模板。运行期间只保留每 60 秒一次的轻量健康检查，用于更新界面状态。
 
 > 风险提示：Sub2API 会把通过其管理后台添加的 OAuth access token 和 refresh token 原样保存在本地 PostgreSQL 中，并通过 ChatGPT 的 Codex backend 转发订阅流量。这不是 OpenAI 公布的通用订阅 API，可能违反上游条款并导致账号受限。请只添加属于自己的账号，不要公开本地端口或向他人分发 API Key。原有 AgentHub 官方 CLI 登录流程仍不会读取或保存 Token；只有你主动添加到 Sub2API 的账号才会进入其本地数据库。
