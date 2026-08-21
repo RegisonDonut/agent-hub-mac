@@ -11,7 +11,8 @@ enum ProcessRunner {
         executable: URL,
         arguments: [String],
         timeout: TimeInterval,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        inputController: ProcessInputController? = nil
     ) async throws -> ProcessResult {
         let wrapper = #"""
         parent_pid=$PPID
@@ -36,7 +37,8 @@ enum ProcessRunner {
             executable: URL(fileURLWithPath: "/bin/zsh"),
             arguments: ["-c", wrapper, "agenthub-pty", executable.path] + arguments,
             timeout: timeout,
-            environment: environment
+            environment: environment,
+            inputController: inputController
         )
     }
 
@@ -46,7 +48,8 @@ enum ProcessRunner {
         stdin: Data? = nil,
         stdinCloseDelay: TimeInterval = 0,
         timeout: TimeInterval = 15,
-        environment: [String: String] = [:]
+        environment: [String: String] = [:],
+        inputController: ProcessInputController? = nil
     ) async throws -> ProcessResult {
         let cancellation = ProcessCancellationController()
         return try await withTaskCancellationHandler {
@@ -64,12 +67,13 @@ enum ProcessRunner {
                 process.standardError = errorPipe
 
                 let inputPipe = Pipe()
-                if stdin != nil { process.standardInput = inputPipe }
+                if stdin != nil || inputController != nil { process.standardInput = inputPipe }
 
                 let completion = LockedProcessCompletion(continuation)
                 guard cancellation.register(process: process, completion: completion) else { return }
 
                 process.terminationHandler = { process in
+                    inputController?.finish()
                     let stdout = outputPipe.fileHandleForReading.readDataToEndOfFile()
                     let stderr = errorPipe.fileHandleForReading.readDataToEndOfFile()
                     if cancellation.isCancelled {
@@ -82,6 +86,9 @@ enum ProcessRunner {
                 do {
                     try Task.checkCancellation()
                     try process.run()
+                    if inputController != nil {
+                        inputController?.attach(inputPipe.fileHandleForWriting)
+                    }
                     if let stdin {
                         inputPipe.fileHandleForWriting.write(stdin)
                         if stdinCloseDelay > 0 {
@@ -105,6 +112,55 @@ enum ProcessRunner {
         } onCancel: {
             cancellation.cancel()
         }
+    }
+}
+
+/// A short-lived input channel for an interactive child process. It never
+/// persists input and is invalidated as soon as the process exits.
+final class ProcessInputController: @unchecked Sendable {
+    private let lock = NSLock()
+    private var handle: FileHandle?
+    private var pending: [Data] = []
+    private var finished = false
+
+    func sendLine(_ value: String) throws {
+        let data = Data((value + "\n").utf8)
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            throw QuotaError.processFailed("登录任务已经结束，请重新点击账号")
+        }
+        if let handle {
+            lock.unlock()
+            try handle.write(contentsOf: data)
+        } else {
+            pending.append(data)
+            lock.unlock()
+        }
+    }
+
+    fileprivate func attach(_ handle: FileHandle) {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            try? handle.close()
+            return
+        }
+        self.handle = handle
+        let queued = pending
+        pending.removeAll(keepingCapacity: false)
+        lock.unlock()
+        for data in queued { try? handle.write(contentsOf: data) }
+    }
+
+    fileprivate func finish() {
+        lock.lock()
+        finished = true
+        let handle = handle
+        self.handle = nil
+        pending.removeAll(keepingCapacity: false)
+        lock.unlock()
+        try? handle?.close()
     }
 }
 

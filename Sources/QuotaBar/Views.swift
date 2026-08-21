@@ -296,7 +296,9 @@ private struct AccountDashboardView: View {
                             account: account,
                             now: now,
                             isLoggingIn: store.loggingInAccountID == account.id,
+                            acceptsAuthorizationCode: store.loggingInAccountID == account.id && store.loginAcceptsAuthorizationCode,
                             login: { store.login(to: account) },
+                            submitAuthorizationCode: { store.submitClaudeAuthorizationCode($0) },
                             cancelLogin: { store.cancelLogin() },
                             delete: { store.removeAccount(accountID: account.id) }
                         )
@@ -340,10 +342,13 @@ private struct AccountCard: View {
     let account: AccountRecord
     let now: Date
     let isLoggingIn: Bool
+    let acceptsAuthorizationCode: Bool
     let login: () -> Void
+    let submitAuthorizationCode: (String) -> Void
     let cancelLogin: () -> Void
     let delete: () -> Void
     @State private var isHovering = false
+    @State private var authorizationCode = ""
 
     private var availability: AccountAvailability { account.availability(now: now) }
     private var canLogin: Bool { !account.isCurrent && !isLoggingIn }
@@ -392,6 +397,19 @@ private struct AccountCard: View {
                 .font(.caption.weight(.medium))
                 .foregroundStyle(availability.isAvailable ? .green : .secondary)
 
+            if acceptsAuthorizationCode {
+                HStack(spacing: 7) {
+                    SecureField("粘贴网页显示的一次性登录代码", text: $authorizationCode)
+                        .textFieldStyle(.roundedBorder)
+                        .onSubmit(submitCode)
+                    Button("确认", action: submitCode)
+                        .disabled(authorizationCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                Text("代码只会传给本次 Claude CLI 登录，不会保存到 AgentHub。")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
             Text("记录于 \(account.lastRefreshedAt.formatted(date: .abbreviated, time: .shortened))")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -425,6 +443,12 @@ private struct AccountCard: View {
             Button("删除本地账号记录", role: .destructive, action: delete)
         }
         .animation(.easeOut(duration: 0.12), value: isHovering)
+    }
+
+    private func submitCode() {
+        let code = authorizationCode
+        authorizationCode = ""
+        submitAuthorizationCode(code)
     }
 
     private var statusDetail: String {

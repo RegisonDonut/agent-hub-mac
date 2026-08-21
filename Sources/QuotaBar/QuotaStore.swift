@@ -7,9 +7,11 @@ final class QuotaStore: ObservableObject {
     @Published private(set) var accounts: [AccountRecord]
     @Published private(set) var loggingInAccountID: String?
     @Published private(set) var loginStatusMessage: String?
+    @Published private(set) var loginAcceptsAuthorizationCode = false
 
     private var refreshTask: Task<Void, Never>?
     private var loginTask: Task<Void, Never>?
+    private var loginInputController: ProcessInputController?
     private let codex = CodexQuotaProvider()
     private let claude = ClaudeQuotaProvider()
     private let accountRepository: AccountHistoryRepository
@@ -72,18 +74,25 @@ final class QuotaStore: ObservableObject {
     func login(to account: AccountRecord) {
         guard !account.isCurrent, loggingInAccountID == nil else { return }
         loggingInAccountID = account.id
-        loginStatusMessage = "正在打开 \(account.provider.displayName) 官方登录页，请确认账号 \(account.email)…"
+        loginAcceptsAuthorizationCode = account.provider == .claudeCode
+        loginStatusMessage = account.provider == .claudeCode
+            ? "网页授权后，请复制页面显示的登录代码并粘贴到下方"
+            : "正在打开 \(account.provider.displayName) 官方登录页，请确认账号 \(account.email)…"
+        let inputController = account.provider == .claudeCode ? ProcessInputController() : nil
+        loginInputController = inputController
 
         loginTask = Task { [weak self] in
             guard let self else { return }
             do {
-                try await loginLauncher.login(to: account)
+                try await loginLauncher.login(to: account, inputController: inputController)
                 loginStatusMessage = "登录完成，正在刷新账号状态…"
                 await refresh()
                 loginStatusMessage = nil
             } catch is CancellationError {
                 loginStatusMessage = "已取消登录授权"
                 loggingInAccountID = nil
+                loginAcceptsAuthorizationCode = false
+                loginInputController = nil
                 loginTask = nil
                 Task { await self.refresh() }
                 return
@@ -92,13 +101,32 @@ final class QuotaStore: ObservableObject {
                 await refresh()
             }
             loggingInAccountID = nil
+            loginAcceptsAuthorizationCode = false
+            loginInputController = nil
             loginTask = nil
+        }
+    }
+
+    func submitClaudeAuthorizationCode(_ rawCode: String) {
+        guard loginAcceptsAuthorizationCode, let input = loginInputController else { return }
+        let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard code.count >= 10, code.count <= 4096 else {
+            loginStatusMessage = "登录代码格式不完整，请从授权成功页重新复制"
+            return
+        }
+        do {
+            try input.sendLine(code)
+            loginAcceptsAuthorizationCode = false
+            loginStatusMessage = "已提交一次性登录代码，正在确认账号…"
+        } catch {
+            loginStatusMessage = error.localizedDescription
         }
     }
 
     func cancelLogin() {
         guard loginTask != nil else { return }
         loginStatusMessage = "正在取消登录授权…"
+        loginAcceptsAuthorizationCode = false
         loginTask?.cancel()
     }
 

@@ -126,6 +126,22 @@ final class AgentHubTests: XCTestCase {
         }
     }
 
+    func testPseudoTerminalRunnerAcceptsDelayedInput() async throws {
+        let input = ProcessInputController()
+        let task = Task {
+            try await ProcessRunner.runInPseudoTerminal(
+                executable: URL(fileURLWithPath: "/bin/sh"),
+                arguments: ["-c", "IFS= read -r value; test \"$value\" = agenthub-test-code"],
+                timeout: 5,
+                inputController: input
+            )
+        }
+        try await Task.sleep(nanoseconds: 150_000_000)
+        try input.sendLine("agenthub-test-code")
+        let result = try await task.value
+        XCTAssertEqual(result.exitCode, 0)
+    }
+
     func testLiveProvidersWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTHUB_LIVE_TESTS"] == "1" else {
             throw XCTSkip("Set AGENTHUB_LIVE_TESTS=1 to exercise local logins")

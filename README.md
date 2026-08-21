@@ -16,6 +16,7 @@ AgentHub 是一个原生 macOS 状态栏应用，也是面向本地 AI Coding Ag
 - 按 Claude Code / Codex、可用状态和邮箱筛选账号
 - 当前账号、预计已刷新账号和等待重置账号自动排序
 - 历史账号卡片悬停高亮，点击后由 AgentHub 在后台启动官方网页登录
+- Claude Code 网页若显示一次性登录代码，可直接粘贴到账号卡片；代码仅转交给本次官方 CLI 进程，不会保存
 - Claude Code 切换前先退出本地旧会话，并在授权后校验实际登录邮箱
 - Claude Code 登录在隐藏 PTY 中运行，确保网页授权结果能够自动回调 CLI
 - 登录授权可随时取消，关闭网页后也不会无限停留在“登录授权中”
@@ -56,7 +57,7 @@ open dist/AgentHub.app
 
 AgentHub 不保存或上传凭据。Codex 数据来自本机 `codex app-server`；Claude Code 数据通过 macOS 钥匙串中的既有 OAuth 登录读取 usage 接口。账号邮箱、套餐以及最后一次额度快照只保存在 `~/Library/Application Support/AgentHub/accounts.json`。
 
-AgentHub 不复制、保存或回写 Claude Code / Codex 的 access token 或 refresh token。点击历史账号时，App 只在后台调用官方 CLI 登录命令并等待浏览器授权完成；Claude Code 会先退出本地旧会话、预填历史邮箱并在回调后核对实际邮箱，Codex 由官方网页选择账号。授权过程最长等待 3 分钟，也可以直接点击卡片右上角的取消按钮。
+AgentHub 不复制、保存或回写 Claude Code / Codex 的 access token 或 refresh token。点击历史账号时，App 只在后台调用官方 CLI 登录命令并等待浏览器授权完成；Claude Code 会先退出本地旧会话、预填历史邮箱。当前 Claude CLI 可能要求把网页显示的一次性登录代码粘贴回 CLI，AgentHub 会在卡片中提供输入框并直接转交给等待中的官方进程，随后核对实际邮箱。Codex 由官方网页选择账号。授权过程最长等待 5 分钟，也可以直接点击卡片右上角的取消按钮。
 
 ## Roadmap
 

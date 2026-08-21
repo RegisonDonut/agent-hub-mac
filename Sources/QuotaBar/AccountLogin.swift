@@ -4,16 +4,16 @@ import OSLog
 struct AccountLoginLauncher: Sendable {
     private static let logger = Logger(subsystem: "com.regisondonut.AgentHub", category: "AccountLogin")
 
-    func login(to account: AccountRecord) async throws {
+    func login(to account: AccountRecord, inputController: ProcessInputController? = nil) async throws {
         switch account.provider {
         case .claudeCode:
-            try await loginClaude(email: account.email)
+            try await loginClaude(email: account.email, inputController: inputController)
         case .codex:
             try await loginCodex()
         }
     }
 
-    private func loginClaude(email: String) async throws {
+    private func loginClaude(email: String, inputController: ProcessInputController?) async throws {
         guard let claude = ExecutableLocator.find("claude") else {
             throw QuotaError.executableMissing("Claude Code CLI")
         }
@@ -29,11 +29,12 @@ struct AccountLoginLauncher: Sendable {
         let result = try await ProcessRunner.runInPseudoTerminal(
             executable: claude,
             arguments: ["auth", "login", "--claudeai", "--email", email],
-            timeout: 3 * 60,
+            timeout: 5 * 60,
             environment: [
                 "NO_PROXY": "localhost,127.0.0.1,::1",
                 "no_proxy": "localhost,127.0.0.1,::1"
-            ]
+            ],
+            inputController: inputController
         )
         try Task.checkCancellation()
         Self.logger.notice("Claude Code login process exited with status \(result.exitCode)")
