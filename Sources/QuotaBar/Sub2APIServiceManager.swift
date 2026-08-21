@@ -2,31 +2,36 @@ import AppKit
 import Foundation
 import Security
 
-struct Sub2APIWebSession {
+struct ManagedCodexAccount: Identifiable, Equatable {
+    let id: Int
+    let name: String
+    let email: String
+    let planType: String?
+    let status: String
+    let schedulable: Bool
+    let fiveHourUsedPercent: Double?
+    let weeklyUsedPercent: Double?
+    let fiveHourResetAt: Date?
+    let weeklyResetAt: Date?
+    let usageUpdatedAt: Date?
+
+    var isEnabled: Bool { status == "active" }
+    var isAvailable: Bool {
+        isEnabled && schedulable && (weeklyUsedPercent ?? 0) < 100
+    }
+}
+
+struct CodexOAuthLoginFlow: Codable, Equatable {
+    let authorizationURL: URL
+    let sessionID: String
+    let state: String
+    let createdAt: Date
+
+    var isExpired: Bool { Date().timeIntervalSince(createdAt) >= 30 * 60 }
+}
+
+struct Sub2APIAdminSession {
     let accessToken: String
-    let refreshToken: String
-    let expiresAtMilliseconds: Int64
-    let userJSON: String
-
-    var bootstrapJavaScript: String {
-        """
-        (() => {
-          localStorage.setItem('auth_token', \(Self.javaScriptLiteral(accessToken)));
-          localStorage.setItem('refresh_token', \(Self.javaScriptLiteral(refreshToken)));
-          localStorage.setItem('token_expires_at', '\(expiresAtMilliseconds)');
-          localStorage.setItem('auth_user', \(Self.javaScriptLiteral(userJSON)));
-          window.location.replace('/admin/accounts');
-        })();
-        """
-    }
-
-    private static func javaScriptLiteral(_ value: String) -> String {
-        guard let data = try? JSONEncoder().encode(value),
-              let encoded = String(data: data, encoding: .utf8) else {
-            return "''"
-        }
-        return encoded
-    }
 }
 
 enum Sub2APIServiceState: Equatable {
@@ -63,6 +68,7 @@ enum Sub2APIServiceState: Equatable {
 final class Sub2APIServiceManager: ObservableObject {
     static let pinnedVersion = "0.1.179"
     static let hostPort = 18_080
+    static let codexProviderID = "agenthub_multiaccount"
 
     @Published private(set) var state: Sub2APIServiceState = .stopped
     @Published private(set) var adminEmail = "admin@agenthub.local"
@@ -71,6 +77,14 @@ final class Sub2APIServiceManager: ObservableObject {
     @Published private(set) var codexRoutingEnabled = false
     @Published private(set) var isUpdatingCodexRouting = false
     @Published private(set) var codexRoutingMessage: String?
+    @Published private(set) var managedCodexAccounts: [ManagedCodexAccount] = []
+    @Published private(set) var isRefreshingManagedAccounts = false
+    @Published private(set) var managedAccountsMessage: String?
+    @Published private(set) var oauthLoginFlow: CodexOAuthLoginFlow?
+    @Published var oauthCallbackInput = ""
+    @Published private(set) var isStartingOAuthLogin = false
+    @Published private(set) var isCompletingOAuthLogin = false
+    @Published private(set) var oauthLoginMessage: String?
 
     let baseURL = URL(string: "http://127.0.0.1:\(hostPort)")!
 
@@ -94,9 +108,17 @@ final class Sub2APIServiceManager: ObservableObject {
     private var codexAPIKeyURL: URL {
         supportDirectory.appendingPathComponent("codex-api-key.secret")
     }
+    private var oauthFlowURL: URL {
+        supportDirectory.appendingPathComponent("codex-oauth-flow.json")
+    }
 
     init() {
-        codexRoutingEnabled = Self.currentModelProvider(in: codexConfigURL) == "agenthub_sub2api"
+        let currentProvider = Self.currentModelProvider(in: codexConfigURL)
+        codexRoutingEnabled = currentProvider == Self.codexProviderID || currentProvider == "agenthub_sub2api"
+        if currentProvider == "agenthub_sub2api" {
+            try? updateCodexProvider(Self.codexProviderID)
+        }
+        restoreOAuthLoginFlow()
     }
 
     func start() {
@@ -124,7 +146,7 @@ final class Sub2APIServiceManager: ObservableObject {
         guard operationTask == nil else { return }
         operationTask = Task { [weak self] in
             guard let self else { return }
-            state = .starting("正在重启 Sub2API…")
+            state = .starting("正在重启多账号服务…")
             do {
                 try ensureConfiguration()
                 _ = try await runDocker(composeArguments(["up", "-d", "--remove-orphans", "--force-recreate"]), timeout: 600)
@@ -143,7 +165,7 @@ final class Sub2APIServiceManager: ObservableObject {
         guard operationTask == nil else { return }
         operationTask = Task { [weak self] in
             guard let self else { return }
-            state = .starting("正在停止 Sub2API…")
+            state = .starting("正在停止多账号服务…")
             do {
                 try ensureConfiguration()
                 _ = try await runDocker(composeArguments(["stop"]), timeout: 90)
@@ -165,7 +187,358 @@ final class Sub2APIServiceManager: ObservableObject {
         lastCheckedAt = Date()
     }
 
-    func createAdminWebSession() async throws -> Sub2APIWebSession {
+    func refreshManagedCodexAccounts() async {
+        guard state.isRunning, !isRefreshingManagedAccounts else { return }
+        isRefreshingManagedAccounts = true
+        defer { isRefreshingManagedAccounts = false }
+
+        do {
+            let payload = try await adminAPI(
+                path: "/api/v1/admin/accounts",
+                queryItems: [
+                    URLQueryItem(name: "page", value: "1"),
+                    URLQueryItem(name: "page_size", value: "200"),
+                    URLQueryItem(name: "platform", value: "openai"),
+                    URLQueryItem(name: "sort_by", value: "created_at"),
+                    URLQueryItem(name: "sort_order", value: "desc")
+                ]
+            )
+            guard let page = payload as? [String: Any],
+                  let items = page["items"] as? [[String: Any]] else {
+                throw QuotaError.processFailed("无法读取 Codex 账号列表")
+            }
+            managedCodexAccounts = items.compactMap(Self.parseManagedCodexAccount)
+            managedAccountsMessage = nil
+        } catch {
+            managedAccountsMessage = error.localizedDescription
+        }
+    }
+
+    func beginCodexAccountLogin() async {
+        guard !isStartingOAuthLogin else { return }
+        isStartingOAuthLogin = true
+        oauthLoginMessage = "正在生成官方登录链接…"
+        defer { isStartingOAuthLogin = false }
+
+        do {
+            guard state.isRunning else {
+                throw QuotaError.processFailed("本地多账号服务尚未运行")
+            }
+            guard let result = try await adminAPI(
+                path: "/api/v1/admin/openai/generate-auth-url",
+                method: "POST",
+                body: [:]
+            ) as? [String: Any],
+                  let rawURL = result["auth_url"] as? String,
+                  let authorizationURL = URL(string: rawURL),
+                  let sessionID = result["session_id"] as? String,
+                  let state = URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false)?
+                    .queryItems?.first(where: { $0.name == "state" })?.value,
+                  !state.isEmpty else {
+                throw QuotaError.processFailed("无法生成 Codex 登录链接")
+            }
+
+            let flow = CodexOAuthLoginFlow(
+                authorizationURL: authorizationURL,
+                sessionID: sessionID,
+                state: state,
+                createdAt: Date()
+            )
+            oauthLoginFlow = flow
+            oauthCallbackInput = ""
+            oauthLoginMessage = "请在浏览器完成登录，再粘贴最终回调链接"
+            try persistOAuthLoginFlow(flow)
+        } catch {
+            oauthLoginMessage = error.localizedDescription
+        }
+    }
+
+    func copyCodexAuthorizationURL() {
+        guard let url = oauthLoginFlow?.authorizationURL else { return }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(url.absoluteString, forType: .string)
+        oauthLoginMessage = "登录链接已复制"
+    }
+
+    func openCodexAuthorizationURL() {
+        guard let url = oauthLoginFlow?.authorizationURL else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    func cancelCodexAccountLogin() {
+        oauthLoginFlow = nil
+        oauthCallbackInput = ""
+        oauthLoginMessage = nil
+        try? fileManager.removeItem(at: oauthFlowURL)
+    }
+
+    func completeCodexAccountLogin() async {
+        guard !isCompletingOAuthLogin else { return }
+        isCompletingOAuthLogin = true
+        oauthLoginMessage = "正在验证并添加账号…"
+        defer { isCompletingOAuthLogin = false }
+
+        do {
+            guard let flow = oauthLoginFlow, !flow.isExpired else {
+                cancelCodexAccountLogin()
+                throw QuotaError.processFailed("登录链接已超过 30 分钟，请重新生成")
+            }
+            let callback = try Self.parseOAuthCallback(oauthCallbackInput, expectedState: flow.state)
+            guard let tokenInfo = try await adminAPI(
+                path: "/api/v1/admin/openai/exchange-code",
+                method: "POST",
+                body: [
+                    "session_id": flow.sessionID,
+                    "code": callback.code,
+                    "state": callback.state
+                ]
+            ) as? [String: Any] else {
+                throw QuotaError.processFailed("Codex 授权结果无效")
+            }
+
+            let groupID = try await defaultOpenAIGroupID()
+            let credentials = Self.openAICredentials(from: tokenInfo)
+            let extra = Self.openAIExtra(from: tokenInfo)
+            let email = (tokenInfo["email"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let accountName = (email?.isEmpty == false ? email! : nil) ?? "Codex 账号"
+            _ = try await adminAPI(
+                path: "/api/v1/admin/accounts",
+                method: "POST",
+                body: [
+                    "name": accountName,
+                    "platform": "openai",
+                    "type": "oauth",
+                    "credentials": credentials,
+                    "extra": extra,
+                    "group_ids": [groupID]
+                ]
+            )
+
+            cancelCodexAccountLogin()
+            await refreshManagedCodexAccounts()
+            try await prepareCodexRoutingKey()
+            await setCodexRoutingEnabled(true)
+            managedAccountsMessage = "账号已添加，多账号模式已启用；新启动的 Codex 将自动使用账号池"
+        } catch {
+            oauthLoginMessage = error.localizedDescription
+        }
+    }
+
+    func setManagedCodexAccountEnabled(_ account: ManagedCodexAccount, enabled: Bool) async {
+        do {
+            _ = try await adminAPI(
+                path: "/api/v1/admin/accounts/\(account.id)",
+                method: "PUT",
+                body: ["status": enabled ? "active" : "inactive"]
+            )
+            await refreshManagedCodexAccounts()
+        } catch {
+            managedAccountsMessage = error.localizedDescription
+        }
+    }
+
+    private func adminAPI(
+        path: String,
+        method: String = "GET",
+        body: [String: Any]? = nil,
+        queryItems: [URLQueryItem] = []
+    ) async throws -> Any {
+        let session = try await createAdminSession()
+        let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent(normalizedPath),
+            resolvingAgainstBaseURL: false
+        )!
+        if !queryItems.isEmpty { components.queryItems = queryItems }
+
+        var request = URLRequest(url: components.url!)
+        request.httpMethod = method
+        request.timeoutInterval = 30
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if let body {
+            request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        }
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse,
+              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw QuotaError.processFailed("本地多账号服务响应无效")
+        }
+        let code = (envelope["code"] as? NSNumber)?.intValue ?? -1
+        guard (200..<300).contains(http.statusCode), code == 0 else {
+            let details = (envelope["detail"] as? String)
+                ?? (envelope["message"] as? String)
+                ?? "请求失败（HTTP \(http.statusCode)）"
+            throw QuotaError.processFailed(details)
+        }
+        return envelope["data"] ?? NSNull()
+    }
+
+    private func defaultOpenAIGroupID() async throws -> Int {
+        guard let groups = try await adminAPI(
+            path: "/api/v1/admin/groups/all",
+            queryItems: [
+                URLQueryItem(name: "platform", value: "openai"),
+                URLQueryItem(name: "status", value: "active")
+            ]
+        ) as? [[String: Any]],
+              let group = groups.first(where: { ($0["name"] as? String) == "openai-default" })
+                ?? groups.first,
+              let id = (group["id"] as? NSNumber)?.intValue else {
+            throw QuotaError.processFailed("未找到可用的 Codex 账号组")
+        }
+        return id
+    }
+
+    private func prepareCodexRoutingKey() async throws {
+        if let existing = try await activeCodexAPIKey() {
+            try saveCodexAPIKey(existing)
+            try writeCodexCredentialHelper()
+            return
+        }
+
+        let groupID = try await defaultOpenAIGroupID()
+        guard let created = try await adminAPI(
+            path: "/api/v1/keys",
+            method: "POST",
+            body: [
+                "name": "AgentHub Codex local",
+                "group_id": groupID,
+                "ip_whitelist": ["127.0.0.1", "::1"],
+                "quota": 0,
+                "rate_limit_5h": 0,
+                "rate_limit_1d": 0,
+                "rate_limit_7d": 0
+            ]
+        ) as? [String: Any],
+              let key = created["key"] as? String,
+              !key.isEmpty else {
+            throw QuotaError.processFailed("无法创建本机 Codex 连接凭据")
+        }
+        try saveCodexAPIKey(key)
+        try writeCodexCredentialHelper()
+    }
+
+    private func activeCodexAPIKey() async throws -> String? {
+        guard let payload = try await adminAPI(
+            path: "/api/v1/keys",
+            queryItems: [
+                URLQueryItem(name: "page", value: "1"),
+                URLQueryItem(name: "page_size", value: "100"),
+                URLQueryItem(name: "sort_by", value: "created_at"),
+                URLQueryItem(name: "sort_order", value: "desc")
+            ]
+        ) as? [String: Any],
+              let items = payload["items"] as? [[String: Any]] else {
+            throw QuotaError.processFailed("无法读取本机 Codex 连接凭据")
+        }
+        let activeItems = items.filter { ($0["status"] as? String) == "active" }
+        let preferred = activeItems.first { ($0["name"] as? String) == "AgentHub Codex local" }
+            ?? activeItems.first
+        return preferred?["key"] as? String
+    }
+
+    static func parseOAuthCallback(
+        _ rawValue: String,
+        expectedState: String
+    ) throws -> (code: String, state: String) {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw QuotaError.processFailed("请粘贴浏览器地址栏中的完整回调链接")
+        }
+
+        let candidate = trimmed.contains("://") ? trimmed : "http://localhost/?\(trimmed)"
+        let components = URLComponents(string: candidate)
+        let code = components?.queryItems?.first(where: { $0.name == "code" })?.value
+        let state = components?.queryItems?.first(where: { $0.name == "state" })?.value
+            ?? expectedState
+        guard let code, !code.isEmpty else {
+            throw QuotaError.processFailed("回调链接中没有找到授权码")
+        }
+        guard state == expectedState else {
+            throw QuotaError.processFailed("回调链接与当前登录会话不匹配，请重新登录")
+        }
+        return (code, state)
+    }
+
+    private static func openAICredentials(from tokenInfo: [String: Any]) -> [String: Any] {
+        let keys = [
+            "access_token", "refresh_token", "id_token", "expires_at", "email",
+            "chatgpt_account_id", "chatgpt_user_id", "organization_id", "plan_type",
+            "subscription_expires_at", "client_id"
+        ]
+        var credentials: [String: Any] = [:]
+        for key in keys where tokenInfo[key] != nil && !(tokenInfo[key] is NSNull) {
+            credentials[key] = tokenInfo[key]
+        }
+        return credentials
+    }
+
+    private static func openAIExtra(from tokenInfo: [String: Any]) -> [String: Any] {
+        let keys = ["email", "name", "privacy_mode"]
+        var extra: [String: Any] = [
+            "openai_long_context_billing_enabled": false,
+            "openai_oauth_responses_websockets_v2_enabled": false,
+            "openai_oauth_responses_websockets_v2_mode": "off"
+        ]
+        for key in keys where tokenInfo[key] != nil && !(tokenInfo[key] is NSNull) {
+            extra[key] = tokenInfo[key]
+        }
+        return extra
+    }
+
+    private static func parseManagedCodexAccount(_ item: [String: Any]) -> ManagedCodexAccount? {
+        guard let id = (item["id"] as? NSNumber)?.intValue else { return nil }
+        let extra = item["extra"] as? [String: Any] ?? [:]
+        let name = item["name"] as? String ?? "Codex 账号"
+        let email = (extra["email"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? name
+        return ManagedCodexAccount(
+            id: id,
+            name: name,
+            email: email,
+            planType: (extra["plan_type"] as? String) ?? (item["plan_type"] as? String),
+            status: item["status"] as? String ?? "unknown",
+            schedulable: item["schedulable"] as? Bool ?? false,
+            fiveHourUsedPercent: (extra["codex_5h_used_percent"] as? NSNumber)?.doubleValue,
+            weeklyUsedPercent: (extra["codex_7d_used_percent"] as? NSNumber)?.doubleValue,
+            fiveHourResetAt: parseISODate(extra["codex_5h_reset_at"] as? String),
+            weeklyResetAt: parseISODate(extra["codex_7d_reset_at"] as? String),
+            usageUpdatedAt: parseISODate(extra["codex_usage_updated_at"] as? String)
+        )
+    }
+
+    private static func parseISODate(_ value: String?) -> Date? {
+        guard let value else { return nil }
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: value) { return date }
+        return ISO8601DateFormatter().date(from: value)
+    }
+
+    private func persistOAuthLoginFlow(_ flow: CodexOAuthLoginFlow) throws {
+        try fileManager.createDirectory(
+            at: supportDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let data = try JSONEncoder().encode(flow)
+        try data.write(to: oauthFlowURL, options: .atomic)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: oauthFlowURL.path)
+    }
+
+    private func restoreOAuthLoginFlow() {
+        guard let data = try? Data(contentsOf: oauthFlowURL),
+              let flow = try? JSONDecoder().decode(CodexOAuthLoginFlow.self, from: data),
+              !flow.isExpired else {
+            try? fileManager.removeItem(at: oauthFlowURL)
+            return
+        }
+        oauthLoginFlow = flow
+        oauthLoginMessage = "登录尚未完成，请粘贴浏览器中的回调链接"
+    }
+
+    func createAdminSession() async throws -> Sub2APIAdminSession {
         guard !adminEmail.isEmpty, !adminPassword.isEmpty else {
             throw QuotaError.processFailed("本地管理员凭据尚未准备完成")
         }
@@ -184,24 +557,10 @@ final class Sub2APIServiceManager: ObservableObject {
               let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
               (envelope["code"] as? Int) == 0,
               let payload = envelope["data"] as? [String: Any],
-              let accessToken = payload["access_token"] as? String,
-              let refreshToken = payload["refresh_token"] as? String,
-              let user = payload["user"] as? [String: Any] else {
-            throw QuotaError.processFailed("无法建立本地 Sub2API 管理会话")
+              let accessToken = payload["access_token"] as? String else {
+            throw QuotaError.processFailed("无法建立本地多账号管理会话")
         }
-
-        let expiresIn = (payload["expires_in"] as? NSNumber)?.doubleValue ?? 3_600
-        let expiresAt = Int64((Date().timeIntervalSince1970 + expiresIn) * 1_000)
-        let userData = try JSONSerialization.data(withJSONObject: user)
-        guard let userJSON = String(data: userData, encoding: .utf8) else {
-            throw QuotaError.processFailed("无法读取本地管理员资料")
-        }
-        return Sub2APIWebSession(
-            accessToken: accessToken,
-            refreshToken: refreshToken,
-            expiresAtMilliseconds: expiresAt,
-            userJSON: userJSON
-        )
+        return Sub2APIAdminSession(accessToken: accessToken)
     }
 
     func revealDataDirectory() {
@@ -211,59 +570,27 @@ final class Sub2APIServiceManager: ObservableObject {
     func setCodexRoutingEnabled(_ enabled: Bool) async {
         guard !isUpdatingCodexRouting else { return }
         isUpdatingCodexRouting = true
-        codexRoutingMessage = enabled ? "正在连接本地 Sub2API…" : "正在切回官方 Codex…"
+        codexRoutingMessage = enabled ? "正在启用 Codex 多账号模式…" : "正在切回官方 Codex…"
         defer { isUpdatingCodexRouting = false }
 
         do {
             try ensureConfiguration()
             if enabled {
                 guard state.isRunning else {
-                    throw QuotaError.processFailed("Sub2API 尚未运行")
+                    throw QuotaError.processFailed("本地多账号服务尚未运行")
                 }
-                let apiKey = try await fetchActiveAPIKey()
-                try saveCodexAPIKey(apiKey)
-                try writeCodexCredentialHelper()
+                try await prepareCodexRoutingKey()
             }
-            try updateCodexProvider(enabled ? "agenthub_sub2api" : "openai")
+            try updateCodexProvider(enabled ? Self.codexProviderID : "openai")
             codexRoutingEnabled = enabled
             codexRoutingMessage = enabled
-                ? "新启动的 Codex 将使用本地 Sub2API"
+                ? "新启动的 Codex 将使用本地多账号池"
                 : "新启动的 Codex 将使用官方授权"
         } catch {
             codexRoutingMessage = error.localizedDescription
-            codexRoutingEnabled = Self.currentModelProvider(in: codexConfigURL) == "agenthub_sub2api"
+            let provider = Self.currentModelProvider(in: codexConfigURL)
+            codexRoutingEnabled = provider == Self.codexProviderID || provider == "agenthub_sub2api"
         }
-    }
-
-    private func fetchActiveAPIKey() async throws -> String {
-        let session = try await createAdminWebSession()
-        var components = URLComponents(
-            url: baseURL.appendingPathComponent("api/v1/keys"),
-            resolvingAgainstBaseURL: false
-        )!
-        components.queryItems = [
-            URLQueryItem(name: "page", value: "1"),
-            URLQueryItem(name: "page_size", value: "100"),
-            URLQueryItem(name: "sort_by", value: "created_at"),
-            URLQueryItem(name: "sort_order", value: "desc")
-        ]
-        var request = URLRequest(url: components.url!)
-        request.timeoutInterval = 10
-        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
-              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let payload = envelope["data"] as? [String: Any],
-              let items = payload["items"] as? [[String: Any]] else {
-            throw QuotaError.processFailed("无法读取 Sub2API 的 API Key")
-        }
-        let activeItems = items.filter { ($0["status"] as? String) == "active" }
-        let preferred = activeItems.first { ($0["name"] as? String) == "AgentHub Codex local" }
-            ?? activeItems.first
-        guard let key = preferred?["key"] as? String, !key.isEmpty else {
-            throw QuotaError.processFailed("请先在 Sub2API 创建一个有效的 API Key")
-        }
-        return key
     }
 
     private func saveCodexAPIKey(_ key: String) throws {
@@ -293,16 +620,16 @@ final class Sub2APIServiceManager: ObservableObject {
         }
 
         contents = Self.settingTopLevelValue("model_provider", to: provider, in: contents)
-        if !contents.contains("[model_providers.agenthub_sub2api]") {
+        if !contents.contains("[model_providers.\(Self.codexProviderID)]") {
             if !contents.isEmpty, !contents.hasSuffix("\n") { contents += "\n" }
             contents += """
 
-            [model_providers.agenthub_sub2api]
-            name = "AgentHub Local Sub2API"
+            [model_providers.\(Self.codexProviderID)]
+            name = "AgentHub Codex Multi-Account"
             base_url = "http://127.0.0.1:\(Self.hostPort)/v1"
             wire_api = "responses"
 
-            [model_providers.agenthub_sub2api.auth]
+            [model_providers.\(Self.codexProviderID).auth]
             command = "\(codexCredentialHelperURL.path)"
             timeout_ms = 3000
             refresh_interval_ms = 0
@@ -509,7 +836,7 @@ final class Sub2APIServiceManager: ObservableObject {
             if await isHealthy() { return }
             try await Task.sleep(nanoseconds: 2 * 1_000_000_000)
         }
-        throw QuotaError.processFailed("Sub2API 在 \(Int(timeout)) 秒内未能启动，请查看服务日志")
+        throw QuotaError.processFailed("本地多账号服务在 \(Int(timeout)) 秒内未能启动，请查看服务日志")
     }
 
     private func enforceLoopbackBinding() async throws {
@@ -518,7 +845,7 @@ final class Sub2APIServiceManager: ObservableObject {
         ], timeout: 15)
         guard Self.portBindingsAreLoopbackOnly(result.stdout) else {
             _ = try? await runDocker(["stop", "agenthub-sub2api"], timeout: 30)
-            throw QuotaError.processFailed("安全拦截：检测到 Sub2API 端口并非仅绑定本机，服务已自动停止")
+            throw QuotaError.processFailed("安全拦截：检测到多账号服务端口并非仅绑定本机，服务已自动停止")
         }
     }
 

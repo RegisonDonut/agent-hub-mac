@@ -23,8 +23,11 @@ AgentHub 是一个原生 macOS 状态栏应用，也是面向本地 AI Coding Ag
 - 登录成功后自动刷新看板，全程不打开 Terminal
 - 自动把 macOS 系统 SOCKS/HTTPS 代理传给 Codex 后台进程
 - Codex 额度请求失败时自动进行三次退避重试
-- App 启动时自动启动本机 Sub2API、PostgreSQL 与 Redis 服务
-- 内嵌 Sub2API Codex 管理后台，支持添加多个订阅账号和生成本地 API Key
+- App 启动时自动启动本机 Codex 多账号引擎、PostgreSQL 与 Redis 服务
+- 原生 Codex 多账号窗口：生成官方登录链接、接收回调链接并直接添加账号
+- 首个账号添加成功后自动创建内部连接 Key 并启用多账号线路，无需用户接触 API Key
+- OAuth 登录步骤保存在 App 级状态和本地临时文件中，菜单卡片关闭后不会丢失
+- 多账号可分别启用或停用，并展示周额度与预计重置时间
 - Sub2API 仅监听 `127.0.0.1:18080`，数据库与 Redis 不暴露宿主机端口
 - 固定使用 Sub2API `v0.1.179`，服务数据保存在 Docker 命名卷中
 
@@ -61,9 +64,9 @@ open dist/AgentHub.app
 
 Codex 状态数据来自本机 `codex app-server`；Claude Code 数据通过 macOS 钥匙串中的既有 OAuth 登录读取 usage 接口。账号邮箱、套餐以及最后一次额度快照只保存在 `~/Library/Application Support/AgentHub/accounts.json`。
 
-AgentHub 不复制、保存或回写 Claude Code / Codex 的 access token 或 refresh token。点击历史账号时，App 只在后台调用官方 CLI 登录命令并等待浏览器授权完成；Claude Code 会先退出本地旧会话、预填历史邮箱。当前 Claude CLI 可能要求把网页显示的一次性登录代码粘贴回 CLI，AgentHub 会在卡片中提供输入框并直接转交给等待中的官方进程，随后核对实际邮箱。Codex 由官方网页选择账号。授权过程最长等待 5 分钟，也可以直接点击卡片右上角的取消按钮。
+AgentHub 的普通账号看板和官方 CLI 登录切换不会复制、保存或回写 Claude Code / Codex 的 access token 或 refresh token。点击历史账号时，App 只在后台调用官方 CLI 登录命令并等待浏览器授权完成；Claude Code 会先退出本地旧会话、预填历史邮箱。当前 Claude CLI 可能要求把网页显示的一次性登录代码粘贴回 CLI，AgentHub 会在卡片中提供输入框并直接转交给等待中的官方进程，随后核对实际邮箱。Codex 由官方网页选择账号。授权过程最长等待 5 分钟，也可以直接点击卡片右上角的取消按钮。
 
-## 本地 Sub2API 管理器
+## Codex 多账号模式
 
 AgentHub 1.4 起可以托管一个仅供本机使用的 Sub2API 栈。首次启动会下载固定版本的 Sub2API、PostgreSQL 和 Redis 镜像，并生成独立的管理员密码、数据库密码、JWT 密钥和 TOTP 密钥。编排文件与密钥文件位于：
 
@@ -71,30 +74,23 @@ AgentHub 1.4 起可以托管一个仅供本机使用的 Sub2API 栈。首次启�
 ~/Library/Application Support/AgentHub/Sub2API/
 ```
 
-容器数据保存在 Docker 命名卷 `agenthub-sub2api_*` 中。打开状态栏面板并点击 `管理后台` 即可直接进入 App 内账号页面；AgentHub 会使用随机本地凭据自动建立管理会话，不显示管理员登录页，也不需要 macOS 管理员权限。本地 Responses API 地址为：
+容器数据保存在 Docker 命名卷 `agenthub-sub2api_*` 中。打开状态栏面板并点击 `Codex 账号` 即可进入独立的原生多账号窗口；用户不会看到上游管理网页、管理员登录、API Key 创建或分组配置。添加账号时，AgentHub 会生成官方 OAuth 链接，用户完成网页登录后把浏览器地址栏中的回调链接粘贴回窗口即可。登录会话最长保留 30 分钟，关闭状态栏卡片或重新打开管理窗口不会丢失步骤。本地 Responses API 地址为：
 
 ```text
 http://127.0.0.1:18080/v1/responses
 ```
 
-本机 Codex 可以用独立 profile 接入，不影响默认的 ChatGPT/Codex 登录：
+内部连接 Key 由 AgentHub 自动创建，并限制为 `127.0.0.1` 与 `::1` 来源。Key 保存在 AgentHub 本地数据目录的 `codex-api-key.secret` 中，文件权限固定为 `600`；`~/.codex/config.toml` 只声明 `agenthub_multiaccount` provider，Codex 通过本地凭据辅助脚本读取 Key，配置文件中不保存 Key 明文。
 
-```bash
-codex --profile sub2api
-codex --profile sub2api exec "检查这个项目"
-```
-
-中转 API Key 保存在 AgentHub 本地数据目录的 `codex-api-key.secret` 中，文件权限固定为 `600`；`~/.codex/config.toml` 只声明 `agenthub_sub2api` provider，`~/.codex/sub2api.config.toml` 负责选择该 provider。Codex 通过本地凭据辅助脚本读取 Key，Codex 配置文件中不保存 Key 明文。
-
-AgentHub 1.5 起，状态栏面板提供 `Codex 使用 Sub2API` 开关。打开时自动选择有效 Key、写入钥匙串并把全局 Codex provider 切到本地中转；关闭时只把 provider 切回官方 `openai`，不会删除官方登录凭据。切换对新启动的 Codex 会话生效。
+首个账号添加成功后，AgentHub 会自动启用多账号线路。状态栏面板和管理窗口也提供 `Codex 多账号模式` 开关；关闭时只把 provider 切回官方 `openai`，不会删除官方登录凭据或本地账号池。切换对新启动的 Codex 会话生效。
 
 Docker 端口固定绑定到 loopback，PostgreSQL 与 Redis 完全不发布宿主机端口。AgentHub 启动服务时会验证一次 Docker 的实际绑定；如果发现 Sub2API 被改为 `0.0.0.0`、局域网地址或其他非本机绑定，会立即停止容器并显示安全错误。每次启动还会把编排文件恢复为内置安全模板。运行期间只保留每 60 秒一次的轻量健康检查，用于更新界面状态。
 
-> 风险提示：Sub2API 会把通过其管理后台添加的 OAuth access token 和 refresh token 原样保存在本地 PostgreSQL 中，并通过 ChatGPT 的 Codex backend 转发订阅流量。这不是 OpenAI 公布的通用订阅 API，可能违反上游条款并导致账号受限。请只添加属于自己的账号，不要公开本地端口或向他人分发 API Key。原有 AgentHub 官方 CLI 登录流程仍不会读取或保存 Token；只有你主动添加到 Sub2API 的账号才会进入其本地数据库。
+> 风险提示：Codex 多账号模式内部使用 Sub2API，并会把通过该模式添加的 OAuth access token 和 refresh token 原样保存在本地 PostgreSQL 中，再通过 ChatGPT 的 Codex backend 转发订阅流量。这不是 OpenAI 公布的通用订阅 API，可能违反上游条款并导致账号受限。请只添加属于自己的账号，不要公开本地端口。原有 AgentHub 官方 CLI 登录流程仍不会读取或保存 Token；只有主动添加到多账号模式的账号才会进入本地数据库。
 
 ## Roadmap
 
-- 将 Sub2API 账号、额度和调度状态逐步原生化到 AgentHub 界面
+- 账号删除、重新授权和更细粒度的调度优先级
 - 本地会话、模型和配置管理
 - Agent 健康检查与常见问题修复
 - 统一的使用量、成本与权限中心

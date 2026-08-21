@@ -21,9 +21,9 @@ struct AgentHubApp: App {
         }
         .menuBarExtraStyle(.window)
 
-        Window("Sub2API · Codex 管理器", id: "sub2api-manager") {
+        Window("Codex 多账号管理", id: "sub2api-manager") {
             Sub2APIManagerView(service: sub2API)
         }
-        .defaultSize(width: 1_080, height: 760)
+        .defaultSize(width: 900, height: 720)
     }
 }

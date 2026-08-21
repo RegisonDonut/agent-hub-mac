@@ -98,7 +98,7 @@ struct QuotaPanelView: View {
                             .fill(sub2API.state.isRunning ? Color.green : Color.secondary)
                             .frame(width: 6, height: 6)
                         VStack(alignment: .leading, spacing: 0) {
-                            Text("管理后台")
+                            Text("Codex 账号")
                                 .font(.caption.bold())
                             Text(sub2API.state.title)
                                 .font(.caption2)
@@ -114,7 +114,7 @@ struct QuotaPanelView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .help("打开本地 Sub2API 管理网页")
+                .help("打开 Codex 多账号管理")
                 Button {
                     Task { await store.refresh() }
                 } label: {
@@ -168,9 +168,9 @@ struct QuotaPanelView: View {
                 Image(systemName: "arrow.triangle.branch")
                     .foregroundStyle(sub2API.codexRoutingEnabled ? .green : .secondary)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Codex 使用 Sub2API")
+                    Text("Codex 多账号模式")
                         .font(.callout.weight(.medium))
-                    Text(sub2API.codexRoutingEnabled ? "本地订阅中转" : "官方授权")
+                    Text(sub2API.codexRoutingEnabled ? "使用本地账号池" : "使用官方登录")
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }

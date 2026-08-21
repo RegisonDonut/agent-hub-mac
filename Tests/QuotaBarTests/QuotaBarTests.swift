@@ -97,11 +97,25 @@ final class AgentHubTests: XCTestCase {
         """
         let updated = Sub2APIServiceManager.settingTopLevelValue(
             "model_provider",
-            to: "agenthub_sub2api",
+            to: Sub2APIServiceManager.codexProviderID,
             in: config
         )
-        XCTAssertTrue(updated.contains("model_provider = \"agenthub_sub2api\""))
+        XCTAssertTrue(updated.contains("model_provider = \"agenthub_multiaccount\""))
         XCTAssertTrue(updated.contains("model_provider = \"must-not-change\""))
+    }
+
+    @MainActor
+    func testCodexOAuthCallbackParsing() throws {
+        let callback = try Sub2APIServiceManager.parseOAuthCallback(
+            "http://localhost:1455/auth/callback?code=test-code&state=test-state",
+            expectedState: "test-state"
+        )
+        XCTAssertEqual(callback.code, "test-code")
+        XCTAssertEqual(callback.state, "test-state")
+        XCTAssertThrowsError(try Sub2APIServiceManager.parseOAuthCallback(
+            "code=test-code&state=wrong-state",
+            expectedState: "test-state"
+        ))
     }
 
     @MainActor
@@ -110,17 +124,24 @@ final class AgentHubTests: XCTestCase {
             throw XCTSkip("Set AGENTHUB_SUB2API_LIVE_TESTS=1 to exercise the local Sub2API login")
         }
         let service = Sub2APIServiceManager()
+        let originalRoutingState = service.codexRoutingEnabled
         await service.startService()
         XCTAssertTrue(service.state.isRunning)
-        let session = try await service.createAdminWebSession()
+        let session = try await service.createAdminSession()
         XCTAssertFalse(session.accessToken.isEmpty)
-        XCTAssertFalse(session.refreshToken.isEmpty)
-        XCTAssertTrue(session.bootstrapJavaScript.contains("window.location.replace('/admin/accounts')"))
+        await service.refreshManagedCodexAccounts()
+        XCTAssertFalse(service.managedCodexAccounts.isEmpty)
+
+        await service.beginCodexAccountLogin()
+        XCTAssertNotNil(service.oauthLoginFlow)
+        service.cancelCodexAccountLogin()
+        XCTAssertNil(service.oauthLoginFlow)
 
         await service.setCodexRoutingEnabled(false)
         XCTAssertFalse(service.codexRoutingEnabled)
         await service.setCodexRoutingEnabled(true)
         XCTAssertTrue(service.codexRoutingEnabled)
+        await service.setCodexRoutingEnabled(originalRoutingState)
     }
 
     func testProcessRunnerPassesEnvironmentOverrides() async throws {
