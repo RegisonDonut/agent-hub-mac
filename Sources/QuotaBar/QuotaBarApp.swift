@@ -63,10 +63,7 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusItem() {
         let remaining: Double?
         if sub2API.codexRoutingEnabled {
-            remaining = sub2API.managedCodexAccounts
-                .filter { $0.isEnabled && $0.hasVerifiedQuota }
-                .compactMap(\.weeklyRemainingPercent)
-                .max()
+            remaining = ManagedCodexAccount.poolRemainingPercent(sub2API.managedCodexAccounts)
         } else {
             remaining = store.snapshot.codexWeekly?.remainingPercent
         }

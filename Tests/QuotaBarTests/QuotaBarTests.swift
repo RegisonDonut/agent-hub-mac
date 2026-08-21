@@ -136,6 +136,43 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(sorted.map(\.id), [3, 2, 4, 1, 5, 6])
     }
 
+    func testManagedCodexPoolRemainingUsesEqualAverageOfCallableAccounts() {
+        let now = Date()
+        func account(id: Int, remaining: Double?, enabled: Bool = true, schedulable: Bool = true) -> ManagedCodexAccount {
+            ManagedCodexAccount(
+                id: id,
+                name: "Codex \(id)",
+                email: "account\(id)@example.com",
+                planType: "pro",
+                status: enabled ? "active" : "inactive",
+                schedulable: schedulable,
+                fiveHourUsedPercent: nil,
+                weeklyUsedPercent: remaining.map { 100 - $0 },
+                fiveHourResetAt: nil,
+                weeklyResetAt: now.addingTimeInterval(3_600),
+                usageUpdatedAt: remaining == nil ? nil : now
+            )
+        }
+
+        XCTAssertEqual(ManagedCodexAccount.poolRemainingPercent([
+            account(id: 1, remaining: 60),
+            account(id: 2, remaining: 80)
+        ]), 70)
+        XCTAssertEqual(ManagedCodexAccount.poolRemainingPercent([
+            account(id: 1, remaining: 60),
+            account(id: 2, remaining: 0),
+            account(id: 3, remaining: 90, enabled: false),
+            account(id: 4, remaining: 90, schedulable: false)
+        ]), 60)
+        XCTAssertEqual(ManagedCodexAccount.poolRemainingPercent([
+            account(id: 1, remaining: 0),
+            account(id: 2, remaining: 0)
+        ]), 0)
+        XCTAssertNil(ManagedCodexAccount.poolRemainingPercent([
+            account(id: 1, remaining: nil)
+        ]))
+    }
+
     @MainActor
     func testSub2APIStackIsPinnedAndLocalOnly() {
         let compose = Sub2APIServiceManager.composeFile

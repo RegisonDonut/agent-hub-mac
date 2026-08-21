@@ -45,6 +45,19 @@ struct ManagedCodexAccount: Identifiable, Equatable {
         return lhs.id > rhs.id
     }
 
+    static func poolRemainingPercent(_ accounts: [Self]) -> Double? {
+        let availableRemaining = accounts
+            .filter(\.isAvailable)
+            .compactMap(\.weeklyRemainingPercent)
+        if !availableRemaining.isEmpty {
+            return availableRemaining.reduce(0, +) / Double(availableRemaining.count)
+        }
+
+        // A verified pool with no callable account is exhausted/unavailable, not unknown.
+        let hasVerifiedEnabledAccount = accounts.contains { $0.isEnabled && $0.hasVerifiedQuota }
+        return hasVerifiedEnabledAccount ? 0 : nil
+    }
+
     private var sortRank: Int {
         guard isEnabled else { return 3 }
         guard hasVerifiedQuota else { return 2 }
