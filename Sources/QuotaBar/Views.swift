@@ -125,6 +125,8 @@ struct QuotaPanelView: View {
                 .help("立即刷新")
             }
 
+            codexRoutingControl
+
             Divider()
             Picker("视图", selection: $selectedTab) {
                 ForEach(PanelTab.allCases, id: \.self) { tab in
@@ -158,6 +160,44 @@ struct QuotaPanelView: View {
         }
         .padding(16)
         .frame(width: 430)
+    }
+
+    private var codexRoutingControl: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 9) {
+                Image(systemName: "arrow.triangle.branch")
+                    .foregroundStyle(sub2API.codexRoutingEnabled ? .green : .secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Codex 使用 Sub2API")
+                        .font(.callout.weight(.medium))
+                    Text(sub2API.codexRoutingEnabled ? "本地订阅中转" : "官方授权")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if sub2API.isUpdatingCodexRouting {
+                    ProgressView().controlSize(.small)
+                }
+                Toggle("", isOn: Binding(
+                    get: { sub2API.codexRoutingEnabled },
+                    set: { enabled in
+                        Task { await sub2API.setCodexRoutingEnabled(enabled) }
+                    }
+                ))
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .controlSize(.small)
+                .disabled(sub2API.isUpdatingCodexRouting ||
+                    (!sub2API.codexRoutingEnabled && !sub2API.state.isRunning))
+            }
+            if let message = sub2API.codexRoutingMessage {
+                Text(message)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(9)
+        .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
     }
 
     @ViewBuilder

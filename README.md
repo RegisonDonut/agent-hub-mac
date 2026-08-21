@@ -84,7 +84,9 @@ codex --profile sub2api
 codex --profile sub2api exec "检查这个项目"
 ```
 
-中转 API Key 保存在 macOS 钥匙串，`~/.codex/config.toml` 只声明 `agenthub_sub2api` provider，`~/.codex/sub2api.config.toml` 负责选择该 provider。Codex 通过本地凭据辅助脚本读取 Key，配置文件中不保存 Key 明文。
+中转 API Key 保存在 AgentHub 本地数据目录的 `codex-api-key.secret` 中，文件权限固定为 `600`；`~/.codex/config.toml` 只声明 `agenthub_sub2api` provider，`~/.codex/sub2api.config.toml` 负责选择该 provider。Codex 通过本地凭据辅助脚本读取 Key，Codex 配置文件中不保存 Key 明文。
+
+AgentHub 1.5 起，状态栏面板提供 `Codex 使用 Sub2API` 开关。打开时自动选择有效 Key、写入钥匙串并把全局 Codex provider 切到本地中转；关闭时只把 provider 切回官方 `openai`，不会删除官方登录凭据。切换对新启动的 Codex 会话生效。
 
 Docker 端口固定绑定到 loopback，PostgreSQL 与 Redis 完全不发布宿主机端口。AgentHub 启动服务时会验证一次 Docker 的实际绑定；如果发现 Sub2API 被改为 `0.0.0.0`、局域网地址或其他非本机绑定，会立即停止容器并显示安全错误。每次启动还会把编排文件恢复为内置安全模板。运行期间只保留每 60 秒一次的轻量健康检查，用于更新界面状态。
 

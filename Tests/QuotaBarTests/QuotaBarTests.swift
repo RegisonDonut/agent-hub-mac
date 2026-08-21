@@ -87,6 +87,21 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(Sub2APIServiceManager.portBindingsAreLoopbackOnly(safe))
         XCTAssertFalse(Sub2APIServiceManager.portBindingsAreLoopbackOnly(exposed))
         XCTAssertFalse(Sub2APIServiceManager.portBindingsAreLoopbackOnly(unexpectedPort))
+
+        let config = """
+        model = "gpt-5.6-sol"
+        model_provider = "openai"
+
+        [model_providers.example]
+        model_provider = "must-not-change"
+        """
+        let updated = Sub2APIServiceManager.settingTopLevelValue(
+            "model_provider",
+            to: "agenthub_sub2api",
+            in: config
+        )
+        XCTAssertTrue(updated.contains("model_provider = \"agenthub_sub2api\""))
+        XCTAssertTrue(updated.contains("model_provider = \"must-not-change\""))
     }
 
     @MainActor
@@ -101,6 +116,11 @@ final class AgentHubTests: XCTestCase {
         XCTAssertFalse(session.accessToken.isEmpty)
         XCTAssertFalse(session.refreshToken.isEmpty)
         XCTAssertTrue(session.bootstrapJavaScript.contains("window.location.replace('/admin/accounts')"))
+
+        await service.setCodexRoutingEnabled(false)
+        XCTAssertFalse(service.codexRoutingEnabled)
+        await service.setCodexRoutingEnabled(true)
+        XCTAssertTrue(service.codexRoutingEnabled)
     }
 
     func testProcessRunnerPassesEnvironmentOverrides() async throws {

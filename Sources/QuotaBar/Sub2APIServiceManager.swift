@@ -68,6 +68,9 @@ final class Sub2APIServiceManager: ObservableObject {
     @Published private(set) var adminEmail = "admin@agenthub.local"
     @Published private(set) var adminPassword = ""
     @Published private(set) var lastCheckedAt: Date?
+    @Published private(set) var codexRoutingEnabled = false
+    @Published private(set) var isUpdatingCodexRouting = false
+    @Published private(set) var codexRoutingMessage: String?
 
     let baseURL = URL(string: "http://127.0.0.1:\(hostPort)")!
 
@@ -82,6 +85,19 @@ final class Sub2APIServiceManager: ObservableObject {
 
     private var composeURL: URL { supportDirectory.appendingPathComponent("docker-compose.yml") }
     private var environmentURL: URL { supportDirectory.appendingPathComponent(".env") }
+    private var codexConfigURL: URL {
+        fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".codex/config.toml")
+    }
+    private var codexCredentialHelperURL: URL {
+        supportDirectory.appendingPathComponent("codex-api-key")
+    }
+    private var codexAPIKeyURL: URL {
+        supportDirectory.appendingPathComponent("codex-api-key.secret")
+    }
+
+    init() {
+        codexRoutingEnabled = Self.currentModelProvider(in: codexConfigURL) == "agenthub_sub2api"
+    }
 
     func start() {
         guard lifecycleTask == nil else { return }
@@ -190,6 +206,137 @@ final class Sub2APIServiceManager: ObservableObject {
 
     func revealDataDirectory() {
         NSWorkspace.shared.activateFileViewerSelecting([supportDirectory])
+    }
+
+    func setCodexRoutingEnabled(_ enabled: Bool) async {
+        guard !isUpdatingCodexRouting else { return }
+        isUpdatingCodexRouting = true
+        codexRoutingMessage = enabled ? "正在连接本地 Sub2API…" : "正在切回官方 Codex…"
+        defer { isUpdatingCodexRouting = false }
+
+        do {
+            try ensureConfiguration()
+            if enabled {
+                guard state.isRunning else {
+                    throw QuotaError.processFailed("Sub2API 尚未运行")
+                }
+                let apiKey = try await fetchActiveAPIKey()
+                try saveCodexAPIKey(apiKey)
+                try writeCodexCredentialHelper()
+            }
+            try updateCodexProvider(enabled ? "agenthub_sub2api" : "openai")
+            codexRoutingEnabled = enabled
+            codexRoutingMessage = enabled
+                ? "新启动的 Codex 将使用本地 Sub2API"
+                : "新启动的 Codex 将使用官方授权"
+        } catch {
+            codexRoutingMessage = error.localizedDescription
+            codexRoutingEnabled = Self.currentModelProvider(in: codexConfigURL) == "agenthub_sub2api"
+        }
+    }
+
+    private func fetchActiveAPIKey() async throws -> String {
+        let session = try await createAdminWebSession()
+        var components = URLComponents(
+            url: baseURL.appendingPathComponent("api/v1/keys"),
+            resolvingAgainstBaseURL: false
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "page", value: "1"),
+            URLQueryItem(name: "page_size", value: "100"),
+            URLQueryItem(name: "sort_by", value: "created_at"),
+            URLQueryItem(name: "sort_order", value: "desc")
+        ]
+        var request = URLRequest(url: components.url!)
+        request.timeoutInterval = 10
+        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = envelope["data"] as? [String: Any],
+              let items = payload["items"] as? [[String: Any]] else {
+            throw QuotaError.processFailed("无法读取 Sub2API 的 API Key")
+        }
+        let activeItems = items.filter { ($0["status"] as? String) == "active" }
+        let preferred = activeItems.first { ($0["name"] as? String) == "AgentHub Codex local" }
+            ?? activeItems.first
+        guard let key = preferred?["key"] as? String, !key.isEmpty else {
+            throw QuotaError.processFailed("请先在 Sub2API 创建一个有效的 API Key")
+        }
+        return key
+    }
+
+    private func saveCodexAPIKey(_ key: String) throws {
+        try key.write(to: codexAPIKeyURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: codexAPIKeyURL.path)
+    }
+
+    private func writeCodexCredentialHelper() throws {
+        let helper = """
+        #!/bin/zsh
+        exec /bin/cat "\(codexAPIKeyURL.path)"
+        """
+        try helper.write(to: codexCredentialHelperURL, atomically: true, encoding: .utf8)
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: codexCredentialHelperURL.path)
+    }
+
+    private func updateCodexProvider(_ provider: String) throws {
+        try fileManager.createDirectory(
+            at: codexConfigURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        var contents = (try? String(contentsOf: codexConfigURL, encoding: .utf8)) ?? ""
+        let backupURL = codexConfigURL.appendingPathExtension("agenthub-backup")
+        if fileManager.fileExists(atPath: codexConfigURL.path),
+           !fileManager.fileExists(atPath: backupURL.path) {
+            try fileManager.copyItem(at: codexConfigURL, to: backupURL)
+        }
+
+        contents = Self.settingTopLevelValue("model_provider", to: provider, in: contents)
+        if !contents.contains("[model_providers.agenthub_sub2api]") {
+            if !contents.isEmpty, !contents.hasSuffix("\n") { contents += "\n" }
+            contents += """
+
+            [model_providers.agenthub_sub2api]
+            name = "AgentHub Local Sub2API"
+            base_url = "http://127.0.0.1:\(Self.hostPort)/v1"
+            wire_api = "responses"
+
+            [model_providers.agenthub_sub2api.auth]
+            command = "\(codexCredentialHelperURL.path)"
+            timeout_ms = 3000
+            refresh_interval_ms = 0
+            """
+        }
+        try contents.write(to: codexConfigURL, atomically: true, encoding: .utf8)
+    }
+
+    static func currentModelProvider(in configURL: URL) -> String? {
+        guard let contents = try? String(contentsOf: configURL, encoding: .utf8) else { return nil }
+        let topLevel = contents.split(separator: "\n", omittingEmptySubsequences: false)
+            .prefix { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }
+        for line in topLevel {
+            let parts = line.split(separator: "=", maxSplits: 1).map(String.init)
+            if parts.count == 2, parts[0].trimmingCharacters(in: .whitespaces) == "model_provider" {
+                return parts[1].trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
+            }
+        }
+        return nil
+    }
+
+    static func settingTopLevelValue(_ key: String, to value: String, in contents: String) -> String {
+        var lines = contents.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let firstTable = lines.firstIndex { $0.trimmingCharacters(in: .whitespaces).hasPrefix("[") }
+            ?? lines.endIndex
+        if let index = lines[..<firstTable].firstIndex(where: {
+            $0.split(separator: "=", maxSplits: 1).first?.trimmingCharacters(in: .whitespaces) == key
+        }) {
+            lines[index] = "\(key) = \"\(value)\""
+        } else {
+            lines.insert("\(key) = \"\(value)\"", at: firstTable)
+        }
+        return lines.joined(separator: "\n")
     }
 
     private func performStart() async {
