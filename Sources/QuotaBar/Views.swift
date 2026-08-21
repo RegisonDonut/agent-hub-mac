@@ -90,6 +90,7 @@ struct QuotaPanelView: View {
                 }
                 Spacer()
                 Button {
+                    NSApplication.shared.activate(ignoringOtherApps: true)
                     openWindow(id: "sub2api-manager")
                 } label: {
                     HStack(spacing: 7) {
@@ -97,7 +98,7 @@ struct QuotaPanelView: View {
                             .fill(sub2API.state.isRunning ? Color.green : Color.secondary)
                             .frame(width: 6, height: 6)
                         VStack(alignment: .leading, spacing: 0) {
-                            Text("Subscribe to API")
+                            Text("管理后台")
                                 .font(.caption.bold())
                             Text(sub2API.state.title)
                                 .font(.caption2)
@@ -113,7 +114,7 @@ struct QuotaPanelView: View {
                     }
                 }
                 .buttonStyle(.plain)
-                .help("直接进入本地 Codex 订阅账号页面")
+                .help("打开本地 Sub2API 管理网页")
                 Button {
                     Task { await store.refresh() }
                 } label: {

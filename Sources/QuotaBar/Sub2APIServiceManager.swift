@@ -89,7 +89,7 @@ final class Sub2APIServiceManager: ObservableObject {
             guard let self else { return }
             await startService()
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 15 * 1_000_000_000)
+                try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
                 await refreshState()
             }
         }
@@ -142,12 +142,7 @@ final class Sub2APIServiceManager: ObservableObject {
 
     func refreshState() async {
         if await isHealthy() {
-            do {
-                try await enforceLoopbackBinding()
-                state = .running
-            } catch {
-                state = .failed(error.localizedDescription)
-            }
+            state = .running
         } else if state.isRunning {
             state = .stopped
         }

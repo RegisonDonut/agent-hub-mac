@@ -71,13 +71,13 @@ AgentHub 1.4 起可以托管一个仅供本机使用的 Sub2API 栈。首次启�
 ~/Library/Application Support/AgentHub/Sub2API/
 ```
 
-容器数据保存在 Docker 命名卷 `agenthub-sub2api_*` 中。打开状态栏面板并点击 `Subscribe to API` 即可直接进入 App 内账号页面；AgentHub 会使用随机本地凭据自动建立管理会话，不显示管理员登录页，也不需要 macOS 管理员权限。本地 Responses API 地址为：
+容器数据保存在 Docker 命名卷 `agenthub-sub2api_*` 中。打开状态栏面板并点击 `管理后台` 即可直接进入 App 内账号页面；AgentHub 会使用随机本地凭据自动建立管理会话，不显示管理员登录页，也不需要 macOS 管理员权限。本地 Responses API 地址为：
 
 ```text
 http://127.0.0.1:18080/v1/responses
 ```
 
-Docker 端口固定绑定到 loopback，PostgreSQL 与 Redis 完全不发布宿主机端口。AgentHub 每 15 秒审计一次实际 Docker 端口绑定；如果发现 Sub2API 被改为 `0.0.0.0`、局域网地址或其他非本机绑定，会立即停止容器并显示安全错误。每次启动还会把编排文件恢复为内置安全模板。
+Docker 端口固定绑定到 loopback，PostgreSQL 与 Redis 完全不发布宿主机端口。AgentHub 启动服务时会验证一次 Docker 的实际绑定；如果发现 Sub2API 被改为 `0.0.0.0`、局域网地址或其他非本机绑定，会立即停止容器并显示安全错误。每次启动还会把编排文件恢复为内置安全模板。运行期间只保留每 60 秒一次的轻量健康检查，用于更新界面状态。
 
 > 风险提示：Sub2API 会把通过其管理后台添加的 OAuth access token 和 refresh token 原样保存在本地 PostgreSQL 中，并通过 ChatGPT 的 Codex backend 转发订阅流量。这不是 OpenAI 公布的通用订阅 API，可能违反上游条款并导致账号受限。请只添加属于自己的账号，不要公开本地端口或向他人分发 API Key。原有 AgentHub 官方 CLI 登录流程仍不会读取或保存 Token；只有你主动添加到 Sub2API 的账号才会进入其本地数据库。
 
