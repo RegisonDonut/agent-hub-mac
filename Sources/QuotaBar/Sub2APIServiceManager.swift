@@ -16,8 +16,10 @@ struct ManagedCodexAccount: Identifiable, Equatable {
     let usageUpdatedAt: Date?
 
     var isEnabled: Bool { status == "active" }
+    var hasVerifiedQuota: Bool { weeklyUsedPercent != nil && usageUpdatedAt != nil }
+    var isQuotaExhausted: Bool { weeklyUsedPercent.map { $0 >= 100 } ?? false }
     var isAvailable: Bool {
-        isEnabled && schedulable && (weeklyUsedPercent ?? 0) < 100
+        isEnabled && schedulable && hasVerifiedQuota && !isQuotaExhausted
     }
 }
 
@@ -80,6 +82,8 @@ final class Sub2APIServiceManager: ObservableObject {
     @Published private(set) var managedCodexAccounts: [ManagedCodexAccount] = []
     @Published private(set) var isRefreshingManagedAccounts = false
     @Published private(set) var managedAccountsMessage: String?
+    @Published private(set) var refreshingQuotaAccountIDs: Set<Int> = []
+    @Published private(set) var quotaRefreshErrors: [Int: String] = [:]
     @Published private(set) var oauthLoginFlow: CodexOAuthLoginFlow?
     @Published var oauthCallbackInput = ""
     @Published private(set) var isStartingOAuthLogin = false
@@ -187,31 +191,68 @@ final class Sub2APIServiceManager: ObservableObject {
         lastCheckedAt = Date()
     }
 
-    func refreshManagedCodexAccounts() async {
+    func refreshManagedCodexAccounts(forceQuotaRefresh: Bool = false) async {
         guard state.isRunning, !isRefreshingManagedAccounts else { return }
         isRefreshingManagedAccounts = true
         defer { isRefreshingManagedAccounts = false }
 
         do {
-            let payload = try await adminAPI(
-                path: "/api/v1/admin/accounts",
-                queryItems: [
-                    URLQueryItem(name: "page", value: "1"),
-                    URLQueryItem(name: "page_size", value: "200"),
-                    URLQueryItem(name: "platform", value: "openai"),
-                    URLQueryItem(name: "sort_by", value: "created_at"),
-                    URLQueryItem(name: "sort_order", value: "desc")
-                ]
-            )
-            guard let page = payload as? [String: Any],
-                  let items = page["items"] as? [[String: Any]] else {
-                throw QuotaError.processFailed("无法读取 Codex 账号列表")
+            let accounts = try await loadManagedCodexAccounts()
+            managedCodexAccounts = accounts
+
+            // `schedulable` only means that Sub2API has administratively enabled the
+            // account. It is not evidence that the upstream subscription has quota.
+            // Probe every new account before AgentHub ever labels it as available.
+            let accountsToProbe = accounts.filter {
+                $0.isEnabled && (forceQuotaRefresh || !$0.hasVerifiedQuota)
             }
-            managedCodexAccounts = items.compactMap(Self.parseManagedCodexAccount)
-            managedAccountsMessage = nil
+            for account in accountsToProbe {
+                refreshingQuotaAccountIDs.insert(account.id)
+                quotaRefreshErrors[account.id] = nil
+                do {
+                    _ = try await adminAPI(
+                        path: "/api/v1/admin/openai/accounts/\(account.id)/quota/refresh",
+                        method: "POST",
+                        body: [:]
+                    )
+                } catch {
+                    quotaRefreshErrors[account.id] = error.localizedDescription
+                }
+                refreshingQuotaAccountIDs.remove(account.id)
+            }
+
+            if !accountsToProbe.isEmpty {
+                managedCodexAccounts = try await loadManagedCodexAccounts()
+            }
+            let failedCount = accountsToProbe.filter { quotaRefreshErrors[$0.id] != nil }.count
+            managedAccountsMessage = failedCount == 0
+                ? nil
+                : "有 \(failedCount) 个账号的额度验证失败；失败账号不会参与可用状态判断"
         } catch {
             managedAccountsMessage = error.localizedDescription
         }
+    }
+
+    func isRefreshingQuota(for accountID: Int) -> Bool {
+        refreshingQuotaAccountIDs.contains(accountID)
+    }
+
+    private func loadManagedCodexAccounts() async throws -> [ManagedCodexAccount] {
+        let payload = try await adminAPI(
+            path: "/api/v1/admin/accounts",
+            queryItems: [
+                URLQueryItem(name: "page", value: "1"),
+                URLQueryItem(name: "page_size", value: "200"),
+                URLQueryItem(name: "platform", value: "openai"),
+                URLQueryItem(name: "sort_by", value: "created_at"),
+                URLQueryItem(name: "sort_order", value: "desc")
+            ]
+        )
+        guard let page = payload as? [String: Any],
+              let items = page["items"] as? [[String: Any]] else {
+            throw QuotaError.processFailed("无法读取 Codex 账号列表")
+        }
+        return items.compactMap(Self.parseManagedCodexAccount)
     }
 
     func beginCodexAccountLogin() async {

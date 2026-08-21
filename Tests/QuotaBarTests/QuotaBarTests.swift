@@ -69,6 +69,55 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(account.availability(), .lastKnownAvailable)
     }
 
+    func testManagedCodexAccountRequiresVerifiedRemainingQuotaToBeAvailable() {
+        let base = ManagedCodexAccount(
+            id: 1,
+            name: "Codex",
+            email: "person@example.com",
+            planType: "pro",
+            status: "active",
+            schedulable: true,
+            fiveHourUsedPercent: nil,
+            weeklyUsedPercent: nil,
+            fiveHourResetAt: nil,
+            weeklyResetAt: nil,
+            usageUpdatedAt: nil
+        )
+        XCTAssertFalse(base.hasVerifiedQuota)
+        XCTAssertFalse(base.isAvailable, "Missing quota must never be treated as zero usage")
+
+        let exhausted = ManagedCodexAccount(
+            id: 2,
+            name: base.name,
+            email: base.email,
+            planType: base.planType,
+            status: base.status,
+            schedulable: base.schedulable,
+            fiveHourUsedPercent: nil,
+            weeklyUsedPercent: 100,
+            fiveHourResetAt: nil,
+            weeklyResetAt: Date().addingTimeInterval(3600),
+            usageUpdatedAt: Date()
+        )
+        XCTAssertTrue(exhausted.isQuotaExhausted)
+        XCTAssertFalse(exhausted.isAvailable)
+
+        let available = ManagedCodexAccount(
+            id: 3,
+            name: base.name,
+            email: base.email,
+            planType: base.planType,
+            status: base.status,
+            schedulable: base.schedulable,
+            fiveHourUsedPercent: nil,
+            weeklyUsedPercent: 42,
+            fiveHourResetAt: nil,
+            weeklyResetAt: Date().addingTimeInterval(3600),
+            usageUpdatedAt: Date()
+        )
+        XCTAssertTrue(available.isAvailable)
+    }
+
     @MainActor
     func testSub2APIStackIsPinnedAndLocalOnly() {
         let compose = Sub2APIServiceManager.composeFile
@@ -129,8 +178,15 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(service.state.isRunning)
         let session = try await service.createAdminSession()
         XCTAssertFalse(session.accessToken.isEmpty)
-        await service.refreshManagedCodexAccounts()
+        await service.refreshManagedCodexAccounts(forceQuotaRefresh: true)
         XCTAssertFalse(service.managedCodexAccounts.isEmpty)
+        XCTAssertTrue(service.quotaRefreshErrors.isEmpty)
+        for account in service.managedCodexAccounts where account.isEnabled {
+            XCTAssertTrue(account.hasVerifiedQuota)
+            if account.isQuotaExhausted {
+                XCTAssertFalse(account.isAvailable)
+            }
+        }
 
         await service.beginCodexAccountLogin()
         XCTAssertNotNil(service.oauthLoginFlow)

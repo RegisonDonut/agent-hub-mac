@@ -44,7 +44,7 @@ struct Sub2APIManagerView: View {
             Spacer()
 
             Button {
-                Task { await service.refreshManagedCodexAccounts() }
+                Task { await service.refreshManagedCodexAccounts(forceQuotaRefresh: true) }
             } label: {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
@@ -276,12 +276,13 @@ struct Sub2APIManagerView: View {
     }
 
     private func managedAccountCard(_ account: ManagedCodexAccount) -> some View {
-        HStack(spacing: 13) {
+        let status = accountStatus(account)
+        return HStack(spacing: 13) {
             ZStack {
                 Circle()
-                    .fill(account.isAvailable ? Color.green.opacity(0.18) : Color.secondary.opacity(0.13))
+                    .fill(status.color.opacity(0.18))
                 Image(systemName: "terminal.fill")
-                    .foregroundStyle(account.isAvailable ? .green : .secondary)
+                    .foregroundStyle(status.color)
             }
             .frame(width: 38, height: 38)
 
@@ -291,9 +292,9 @@ struct Sub2APIManagerView: View {
                     .textSelection(.enabled)
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(account.isAvailable ? Color.green : Color.secondary)
+                        .fill(status.color)
                         .frame(width: 6, height: 6)
-                    Text(account.isAvailable ? "可调度" : (account.isEnabled ? "当前不可用" : "已停用"))
+                    Text(status.title)
                     if let plan = account.planType, !plan.isEmpty {
                         Text("· \(plan)")
                     }
@@ -304,7 +305,26 @@ struct Sub2APIManagerView: View {
 
             Spacer()
 
-            if let used = account.weeklyUsedPercent {
+            if service.isRefreshingQuota(for: account.id) {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("正在验证额度")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else if let error = service.quotaRefreshErrors[account.id] {
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("额度获取失败")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help(error)
+                }
+                .frame(maxWidth: 220, alignment: .trailing)
+            } else if let used = account.weeklyUsedPercent {
                 VStack(alignment: .trailing, spacing: 2) {
                     Text("周额度剩余 \(Int(max(0, 100 - used).rounded()))%")
                         .font(.caption.weight(.medium))
@@ -315,7 +335,7 @@ struct Sub2APIManagerView: View {
                     }
                 }
             } else {
-                Text("等待额度数据")
+                Text("额度尚未验证")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -332,6 +352,16 @@ struct Sub2APIManagerView: View {
         }
         .padding(13)
         .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func accountStatus(_ account: ManagedCodexAccount) -> (title: String, color: Color) {
+        if !account.isEnabled { return ("已停用", .secondary) }
+        if service.isRefreshingQuota(for: account.id) { return ("额度验证中", .orange) }
+        if service.quotaRefreshErrors[account.id] != nil { return ("额度未知", .orange) }
+        if !account.hasVerifiedQuota { return ("额度未验证", .secondary) }
+        if account.isQuotaExhausted { return ("额度已用完", .red) }
+        if !account.schedulable { return ("当前不可调度", .secondary) }
+        return ("可调度", .green)
     }
 
     private var servicePlaceholder: some View {
