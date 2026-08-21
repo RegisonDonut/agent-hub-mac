@@ -30,6 +30,30 @@ struct AccountLoginLauncher: Sendable {
             throw AccountLoginError.failed("Codex 登录未完成")
         }
     }
+
+    func ensureOfficialCodexLogin() async throws {
+        guard let codex = ExecutableLocator.find("codex") else {
+            throw QuotaError.executableMissing("Codex CLI")
+        }
+        let environment = SystemProxyEnvironment.current()
+        let status = try await ProcessRunner.run(
+            executable: codex,
+            arguments: ["login", "status"],
+            timeout: 20,
+            environment: environment
+        )
+        if status.exitCode == 0 { return }
+
+        let login = try await ProcessRunner.run(
+            executable: codex,
+            arguments: ["login"],
+            timeout: 3 * 60,
+            environment: environment
+        )
+        guard login.exitCode == 0 else {
+            throw AccountLoginError.failed("Codex 官方登录未完成")
+        }
+    }
 }
 
 enum AccountLoginError: LocalizedError {

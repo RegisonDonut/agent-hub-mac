@@ -216,7 +216,31 @@ private final class LockedProcessCompletion: @unchecked Sendable {
 }
 
 enum ExecutableLocator {
+    static func installBundledCodexCommandIfNeeded() {
+        guard let bundled = bundledCodex(), FileManager.default.isExecutableFile(atPath: bundled.path) else { return }
+        let fileManager = FileManager.default
+        let binDirectory = fileManager.homeDirectoryForCurrentUser.appendingPathComponent(".local/bin", isDirectory: true)
+        let command = binDirectory.appendingPathComponent("codex")
+        do {
+            try fileManager.createDirectory(at: binDirectory, withIntermediateDirectories: true)
+            if fileManager.fileExists(atPath: command.path) {
+                let values = try? command.resourceValues(forKeys: [.isSymbolicLinkKey])
+                guard values?.isSymbolicLink == true,
+                      (try? fileManager.destinationOfSymbolicLink(atPath: command.path))?.contains("AgentHub.app/Contents/Resources/BundledRuntime") == true
+                else { return }
+                try fileManager.removeItem(at: command)
+            }
+            try fileManager.createSymbolicLink(at: command, withDestinationURL: bundled)
+        } catch {
+            // AgentHub still uses the bundled executable when ~/.local/bin is user-managed.
+        }
+    }
+
     static func find(_ name: String) -> URL? {
+        if name == "codex", let bundled = bundledCodex(),
+           FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled
+        }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [
             "\(home)/.local/bin/\(name)",
@@ -225,5 +249,17 @@ enum ExecutableLocator {
             "/usr/bin/\(name)"
         ]
         return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map(URL.init(fileURLWithPath:))
+    }
+
+    private static func bundledCodex() -> URL? {
+        #if arch(arm64)
+        let architecture = "arm64"
+        #else
+        let architecture = "x86_64"
+        #endif
+        return Bundle.main.resourceURL?
+            .appendingPathComponent("BundledRuntime", isDirectory: true)
+            .appendingPathComponent(architecture, isDirectory: true)
+            .appendingPathComponent("codex")
     }
 }

@@ -139,6 +139,15 @@ struct Sub2APIManagerView: View {
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background((service.codexRoutingEnabled ? Color.secondary : Color.blue).opacity(0.12), in: Capsule())
+                Button(account == nil ? "登录" : "检查授权") {
+                    Task {
+                        await service.signInToOfficialCodex()
+                        await store.refresh()
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .disabled(service.isUpdatingCodexRouting)
             }
 
             if let quota = store.snapshot.codexWeekly {
@@ -237,8 +246,7 @@ struct Sub2APIManagerView: View {
             ))
             .labelsHidden()
             .toggleStyle(.switch)
-            .disabled(service.isUpdatingCodexRouting ||
-                (!service.codexRoutingEnabled && service.managedCodexAccounts.isEmpty))
+            .disabled(service.isUpdatingCodexRouting)
         }
         .padding(15)
         .background(.quaternary.opacity(0.75), in: RoundedRectangle(cornerRadius: 12))
@@ -490,6 +498,11 @@ struct Sub2APIManagerView: View {
                 Task { await service.startService() }
             }
             .buttonStyle(.borderedProminent)
+            if case .dockerUnavailable = service.state {
+                Button("下载 Docker Desktop") {
+                    NSWorkspace.shared.open(URL(string: "https://www.docker.com/products/docker-desktop/")!)
+                }
+            }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(30)

@@ -23,6 +23,7 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.setActivationPolicy(.accessory)
+        ExecutableLocator.installBundledCodexCommandIfNeeded()
         installStatusItem()
         observeStatusData()
         store.start()

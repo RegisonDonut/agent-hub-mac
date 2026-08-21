@@ -10,13 +10,15 @@ AgentHub 是一个原生 macOS Codex 管理器，统一管理官方 Codex 登录
 - 有额度账号按剩余额度从高到低排序；0% 账号按最近重置时间排序
 - 新账号添加后立即验证真实额度，未知、失败或耗尽状态不会误标记为可调度
 - 一键在“Codex 多账号”与“Codex 官方登录”线路之间切换
+- 开启多账号时自动启动 Sub2API、创建内部 Key 并写入 Codex provider；关闭时自动检查并发起官方授权
+- 完整安装包内置 Codex CLI 0.149.0 与 Sub2API/PostgreSQL/Redis 离线镜像，无需首次下载服务镜像
 - 登录流程和回调输入可跨窗口关闭保留
 - 登录时启动、手动刷新、本地服务重启与退出管理
 - Sub2API 仅监听 `127.0.0.1:18080`，PostgreSQL 与 Redis 不暴露宿主机端口
 
 ## 安装
 
-要求 macOS 13 或更高版本。多账号模式需要安装并启动 Docker Desktop。
+要求 macOS 13 或更高版本。完整安装包已经包含 AgentHub、Codex CLI 和本地多账号服务镜像。由于 Sub2API 依赖 PostgreSQL 与 Redis，多账号模式仍需要本机安装 Docker Desktop；AgentHub 会自动检测并启动它，Docker 不存在时会显示官方下载按钮。Docker Desktop 本身不随本项目再分发，也不会被静默安装。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scripts/install.sh | bash
@@ -37,7 +39,9 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 - 各账号启用开关、额度状态与重置倒计时
 - 登录时启动、刷新、服务操作和退出
 
-添加首个多账号后，AgentHub 会自动创建仅供本机使用的内部连接 Key，并把 Codex CLI provider 切换为 `agenthub_multiaccount`。关闭多账号线路时只会恢复官方 `openai` provider，不会删除官方登录凭据或本地账号池。切换对新启动的 Codex 会话生效。
+打开“Codex 多账号”开关后，AgentHub 会自动启动本地服务、创建仅供本机使用的内部连接 Key，并把 Codex CLI provider 切换为 `agenthub_multiaccount`；没有账号时可直接继续添加第一个账号。关闭开关会恢复官方 `openai` provider，并检查官方授权：已有授权则直接切回，没有授权才打开 Codex 官方登录页。官方登录凭据和本地账号池都不会被删除。切换对新启动的 Codex 会话生效。
+
+App 首次运行会在 `~/.local/bin/codex` 不存在时创建一个指向内置 Codex CLI 的符号链接；不会覆盖用户已经安装的 Codex 命令。
 
 ## 本地服务与数据
 
@@ -65,3 +69,12 @@ cd agent-hub-mac
 ./scripts/build-app.sh
 open dist/AgentHub.app
 ```
+
+要生成包含双架构 Codex CLI 和双架构容器镜像的完整安装包，先运行：
+
+```bash
+./scripts/prepare-bundled-runtime.sh
+./scripts/build-app.sh release
+```
+
+第三方组件版本、许可证和对应源代码地址随 App 保存在 `Contents/Resources/BundledRuntime/`。

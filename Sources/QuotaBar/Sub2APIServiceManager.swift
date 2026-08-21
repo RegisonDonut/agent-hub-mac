@@ -136,6 +136,7 @@ final class Sub2APIServiceManager: ObservableObject {
 
     private var lifecycleTask: Task<Void, Never>?
     private var operationTask: Task<Void, Never>?
+    private var cachedAdminSession: Sub2APIAdminSession?
     private let fileManager = FileManager.default
 
     private var supportDirectory: URL {
@@ -180,7 +181,10 @@ final class Sub2APIServiceManager: ObservableObject {
     }
 
     func startService() async {
-        guard operationTask == nil else { return }
+        if let operationTask {
+            await operationTask.value
+            return
+        }
         operationTask = Task { [weak self] in
             await self?.performStart()
         }
@@ -252,11 +256,7 @@ final class Sub2APIServiceManager: ObservableObject {
                 refreshingQuotaAccountIDs.insert(account.id)
                 quotaRefreshErrors[account.id] = nil
                 do {
-                    _ = try await adminAPI(
-                        path: "/api/v1/admin/openai/accounts/\(account.id)/quota/refresh",
-                        method: "POST",
-                        body: [:]
-                    )
+                    try await refreshManagedQuotaWithRetry(accountID: account.id)
                 } catch {
                     quotaRefreshErrors[account.id] = error.localizedDescription
                 }
@@ -273,6 +273,25 @@ final class Sub2APIServiceManager: ObservableObject {
         } catch {
             managedAccountsMessage = error.localizedDescription
         }
+    }
+
+    private func refreshManagedQuotaWithRetry(accountID: Int) async throws {
+        var lastError: Error?
+        let delays: [UInt64] = [0, 600_000_000, 1_500_000_000]
+        for delay in delays {
+            if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+            do {
+                _ = try await adminAPI(
+                    path: "/api/v1/admin/openai/accounts/\(accountID)/quota/refresh",
+                    method: "POST",
+                    body: [:]
+                )
+                return
+            } catch {
+                lastError = error
+            }
+        }
+        throw lastError ?? QuotaError.processFailed("额度验证失败")
     }
 
     func isRefreshingQuota(for accountID: Int) -> Bool {
@@ -426,7 +445,6 @@ final class Sub2APIServiceManager: ObservableObject {
         body: [String: Any]? = nil,
         queryItems: [URLQueryItem] = []
     ) async throws -> Any {
-        let session = try await createAdminSession()
         let normalizedPath = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         var components = URLComponents(
             url: baseURL.appendingPathComponent(normalizedPath),
@@ -434,28 +452,36 @@ final class Sub2APIServiceManager: ObservableObject {
         )!
         if !queryItems.isEmpty { components.queryItems = queryItems }
 
-        var request = URLRequest(url: components.url!)
-        request.httpMethod = method
-        request.timeoutInterval = 30
-        request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        if let body {
-            request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        }
+        for attempt in 0..<2 {
+            let session = try await createAdminSession()
+            var request = URLRequest(url: components.url!)
+            request.httpMethod = method
+            request.timeoutInterval = 30
+            request.setValue("Bearer \(session.accessToken)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            if let body {
+                request.httpBody = try JSONSerialization.data(withJSONObject: body)
+            }
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let http = response as? HTTPURLResponse,
-              let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw QuotaError.processFailed("本地多账号服务响应无效")
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let http = response as? HTTPURLResponse,
+                  let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw QuotaError.processFailed("本地多账号服务响应无效")
+            }
+            if http.statusCode == 401, attempt == 0 {
+                cachedAdminSession = nil
+                continue
+            }
+            let code = (envelope["code"] as? NSNumber)?.intValue ?? -1
+            guard (200..<300).contains(http.statusCode), code == 0 else {
+                let details = (envelope["detail"] as? String)
+                    ?? (envelope["message"] as? String)
+                    ?? "请求失败（HTTP \(http.statusCode)）"
+                throw QuotaError.processFailed(details)
+            }
+            return envelope["data"] ?? NSNull()
         }
-        let code = (envelope["code"] as? NSNumber)?.intValue ?? -1
-        guard (200..<300).contains(http.statusCode), code == 0 else {
-            let details = (envelope["detail"] as? String)
-                ?? (envelope["message"] as? String)
-                ?? "请求失败（HTTP \(http.statusCode)）"
-            throw QuotaError.processFailed(details)
-        }
-        return envelope["data"] ?? NSNull()
+        throw QuotaError.processFailed("本地管理会话已过期")
     }
 
     private func defaultOpenAIGroupID() async throws -> Int {
@@ -622,6 +648,7 @@ final class Sub2APIServiceManager: ObservableObject {
     }
 
     func createAdminSession() async throws -> Sub2APIAdminSession {
+        if let cachedAdminSession { return cachedAdminSession }
         guard !adminEmail.isEmpty, !adminPassword.isEmpty else {
             throw QuotaError.processFailed("本地管理员凭据尚未准备完成")
         }
@@ -643,7 +670,9 @@ final class Sub2APIServiceManager: ObservableObject {
               let accessToken = payload["access_token"] as? String else {
             throw QuotaError.processFailed("无法建立本地多账号管理会话")
         }
-        return Sub2APIAdminSession(accessToken: accessToken)
+        let session = Sub2APIAdminSession(accessToken: accessToken)
+        cachedAdminSession = session
+        return session
     }
 
     func revealDataDirectory() {
@@ -659,20 +688,42 @@ final class Sub2APIServiceManager: ObservableObject {
         do {
             try ensureConfiguration()
             if enabled {
+                if !state.isRunning { await startService() }
                 guard state.isRunning else {
-                    throw QuotaError.processFailed("本地多账号服务尚未运行")
+                    throw QuotaError.processFailed(state.detail ?? "本地多账号服务启动失败")
                 }
                 try await prepareCodexRoutingKey()
             }
             try updateCodexProvider(enabled ? Self.codexProviderID : "openai")
             codexRoutingEnabled = enabled
-            codexRoutingMessage = enabled
-                ? "新启动的 Codex 将使用本地多账号池"
-                : "新启动的 Codex 将使用官方授权"
+            if enabled {
+                codexRoutingMessage = managedCodexAccounts.isEmpty
+                    ? "已进入多账号模式，请添加第一个 Codex 账号"
+                    : "新启动的 Codex 将使用本地多账号池"
+            } else {
+                codexRoutingMessage = "正在检查 Codex 官方授权…"
+                try await AccountLoginLauncher().ensureOfficialCodexLogin()
+                codexRoutingMessage = "新启动的 Codex 将使用官方授权"
+            }
         } catch {
             codexRoutingMessage = error.localizedDescription
             let provider = Self.currentModelProvider(in: codexConfigURL)
             codexRoutingEnabled = provider == Self.codexProviderID || provider == "agenthub_sub2api"
+        }
+    }
+
+    func signInToOfficialCodex() async {
+        guard !isUpdatingCodexRouting else { return }
+        isUpdatingCodexRouting = true
+        codexRoutingMessage = "正在打开 Codex 官方授权…"
+        defer { isUpdatingCodexRouting = false }
+        do {
+            try updateCodexProvider("openai")
+            codexRoutingEnabled = false
+            try await AccountLoginLauncher().ensureOfficialCodexLogin()
+            codexRoutingMessage = "Codex 官方授权已就绪"
+        } catch {
+            codexRoutingMessage = error.localizedDescription
         }
     }
 
@@ -768,7 +819,8 @@ final class Sub2APIServiceManager: ObservableObject {
                 return
             }
 
-            state = .starting("首次运行可能需要下载本地服务镜像…")
+            try await loadBundledDockerImagesIfNeeded(docker)
+            state = .starting("正在启动 Codex 多账号服务…")
             _ = try await runDocker(composeArguments(["up", "-d", "--remove-orphans"]), timeout: 900)
             try await enforceLoopbackBinding()
             state = .starting("正在等待数据库迁移和服务就绪…")
@@ -889,6 +941,40 @@ final class Sub2APIServiceManager: ObservableObject {
             try? await Task.sleep(nanoseconds: 2 * 1_000_000_000)
         }
         return false
+    }
+
+    private func loadBundledDockerImagesIfNeeded(_ docker: URL) async throws {
+        #if arch(arm64)
+        let architecture = "arm64"
+        #else
+        let architecture = "x86_64"
+        #endif
+        guard let archive = Bundle.main.resourceURL?
+            .appendingPathComponent("BundledRuntime", isDirectory: true)
+            .appendingPathComponent("docker-images-\(architecture).tar.gz"),
+              fileManager.fileExists(atPath: archive.path) else {
+            // Source builds may intentionally omit the large offline archive.
+            return
+        }
+        let marker = supportDirectory.appendingPathComponent("bundled-images-\(Self.pinnedVersion)-\(architecture).loaded")
+        if fileManager.fileExists(atPath: marker.path) { return }
+
+        state = .starting("首次启动：正在导入随 App 提供的本地服务…")
+        let script = "/usr/bin/gzip -dc \(Self.shellQuote(archive.path)) | \(Self.shellQuote(docker.path)) load"
+        let result = try await ProcessRunner.run(
+            executable: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-c", script],
+            timeout: 900
+        )
+        guard result.exitCode == 0 else {
+            let message = String(data: result.stderr, encoding: .utf8) ?? "无法导入本地服务镜像"
+            throw QuotaError.processFailed(String(message.suffix(1_200)))
+        }
+        try "\(Self.pinnedVersion)\n".write(to: marker, atomically: true, encoding: .utf8)
+    }
+
+    private static func shellQuote(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
     }
 
     private func dockerIsReady(_ docker: URL) async -> Bool {
