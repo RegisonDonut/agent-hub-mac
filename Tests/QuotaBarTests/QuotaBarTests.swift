@@ -9,16 +9,8 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(QuotaWindow(usedPercent: -5, resetsAt: nil, windowName: "week").remainingPercent, 100)
     }
 
-    func testExhaustedClaudeWeekForcesSessionDisplayToZero() {
-        var snapshot = QuotaSnapshot.empty
-        snapshot.claudeSession = QuotaWindow(usedPercent: 10, resetsAt: nil, windowName: "session")
-        snapshot.claudeWeekly = QuotaWindow(usedPercent: 100, resetsAt: Date(timeIntervalSince1970: 123), windowName: "week")
-        XCTAssertEqual(snapshot.claudeSessionForDisplay?.remainingPercent, 0)
-        XCTAssertEqual(snapshot.claudeSessionForDisplay?.resetsAt, snapshot.claudeWeekly?.resetsAt)
-    }
-
     func testBrandMarksAndStatusImageRender() throws {
-        for image in [BrandAssets.openAI(size: 18), BrandAssets.claude(size: 18), StatusBarImage.make(codexRemaining: 52, claudeRemaining: 0)] {
+        for image in [BrandAssets.openAI(size: 18), StatusBarImage.make(codexRemaining: 52)] {
             let tiff = try XCTUnwrap(image.tiffRepresentation)
             let bitmap = try XCTUnwrap(NSBitmapImageRep(data: tiff))
             XCTAssertGreaterThan(bitmap.pixelsWide, 0)
@@ -31,7 +23,7 @@ final class AgentHubTests: XCTestCase {
         let repository = AccountHistoryRepository(fileURL: directory.appendingPathComponent("accounts.json"))
         let reset = Date(timeIntervalSince1970: 1_700_000_000)
         let records = [AccountRecord(
-            provider: .claudeCode,
+            provider: .codex,
             email: "person@example.com",
             planName: "pro",
             quotas: [QuotaWindow(usedPercent: 42, resetsAt: reset, windowName: "周额度")],
@@ -46,18 +38,15 @@ final class AgentHubTests: XCTestCase {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let reset = now.addingTimeInterval(3_600)
         var account = AccountRecord(
-            provider: .claudeCode,
+            provider: .codex,
             email: "old@example.com",
-            quotas: [
-                QuotaWindow(usedPercent: 0, resetsAt: nil, windowName: "5 小时"),
-                QuotaWindow(usedPercent: 100, resetsAt: reset, windowName: "周额度")
-            ],
+            quotas: [QuotaWindow(usedPercent: 100, resetsAt: reset, windowName: "周额度")],
             isCurrent: false
         )
         XCTAssertEqual(account.availability(now: now), .waitingForReset(reset))
         XCTAssertEqual(account.availability(now: reset), .estimatedRefreshed)
 
-        account.quotas[1] = QuotaWindow(usedPercent: 100, resetsAt: nil, windowName: "周额度")
+        account.quotas[0] = QuotaWindow(usedPercent: 100, resetsAt: nil, windowName: "周额度")
         XCTAssertEqual(account.availability(now: now), .unknown)
     }
 
@@ -116,6 +105,35 @@ final class AgentHubTests: XCTestCase {
             usageUpdatedAt: Date()
         )
         XCTAssertTrue(available.isAvailable)
+    }
+
+    func testManagedCodexAccountsSortByRemainingThenNearestReset() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        func account(id: Int, used: Double?, reset: Date?, enabled: Bool = true) -> ManagedCodexAccount {
+            ManagedCodexAccount(
+                id: id,
+                name: "Codex \(id)",
+                email: "account\(id)@example.com",
+                planType: "pro",
+                status: enabled ? "active" : "inactive",
+                schedulable: true,
+                fiveHourUsedPercent: nil,
+                weeklyUsedPercent: used,
+                fiveHourResetAt: nil,
+                weeklyResetAt: reset,
+                usageUpdatedAt: used == nil ? nil : now
+            )
+        }
+        let sorted = [
+            account(id: 1, used: 100, reset: now.addingTimeInterval(7_200)),
+            account(id: 2, used: 70, reset: now.addingTimeInterval(86_400)),
+            account(id: 3, used: 10, reset: now.addingTimeInterval(86_400)),
+            account(id: 4, used: 100, reset: now.addingTimeInterval(3_600)),
+            account(id: 5, used: nil, reset: nil),
+            account(id: 6, used: 0, reset: now, enabled: false)
+        ].sorted(by: ManagedCodexAccount.displayOrder)
+
+        XCTAssertEqual(sorted.map(\.id), [3, 2, 4, 1, 5, 6])
     }
 
     @MainActor
@@ -278,13 +296,9 @@ final class AgentHubTests: XCTestCase {
             throw XCTSkip("Set AGENTHUB_LIVE_TESTS=1 to exercise local logins")
         }
         let codex = try await CodexQuotaProvider().fetch()
-        let claude = try await ClaudeQuotaProvider().fetch()
         if let weekly = codex.weekly {
             XCTAssertTrue((0...100).contains(weekly.remainingPercent))
         }
-        XCTAssertTrue((0...100).contains(claude.session.remainingPercent))
-        XCTAssertTrue((0...100).contains(claude.weekly.remainingPercent))
         XCTAssertFalse(try XCTUnwrap(codex.identity?.email).isEmpty)
-        XCTAssertFalse(try XCTUnwrap(claude.identity?.email).isEmpty)
     }
 }

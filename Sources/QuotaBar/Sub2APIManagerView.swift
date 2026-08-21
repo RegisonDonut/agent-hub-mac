@@ -1,8 +1,11 @@
 import AppKit
+import ServiceManagement
 import SwiftUI
 
 struct Sub2APIManagerView: View {
     @ObservedObject var service: Sub2APIServiceManager
+    @ObservedObject var store: QuotaStore
+    @State private var launchAtLogin = SMAppService.mainApp.status == .enabled
 
     var body: some View {
         VStack(spacing: 0) {
@@ -17,7 +20,9 @@ struct Sub2APIManagerView: View {
         }
         .frame(minWidth: 760, minHeight: 620)
         .task {
+            store.start()
             service.start()
+            await store.refresh()
             await service.refreshManagedCodexAccounts()
         }
     }
@@ -28,7 +33,7 @@ struct Sub2APIManagerView: View {
                 .font(.title3)
                 .foregroundStyle(service.state.isRunning ? .green : .secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Codex 多账号管理")
+                Text("Codex 管理中心")
                     .font(.headline)
                 HStack(spacing: 5) {
                     Circle()
@@ -44,7 +49,11 @@ struct Sub2APIManagerView: View {
             Spacer()
 
             Button {
-                Task { await service.refreshManagedCodexAccounts(forceQuotaRefresh: true) }
+                Task {
+                    async let officialRefresh: Void = store.refresh()
+                    async let poolRefresh: Void = service.refreshManagedCodexAccounts(forceQuotaRefresh: true)
+                    _ = await (officialRefresh, poolRefresh)
+                }
             } label: {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
@@ -73,6 +82,7 @@ struct Sub2APIManagerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 routingSection
+                officialCodexSection
 
                 if service.oauthLoginFlow != nil {
                     oauthFlowSection
@@ -101,8 +111,102 @@ struct Sub2APIManagerView: View {
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
                     .fixedSize(horizontal: false, vertical: true)
+
+                appControls
             }
             .padding(20)
+        }
+    }
+
+    private var officialCodexSection: some View {
+        let account = store.accounts.first { $0.provider == .codex && $0.isCurrent }
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(nsImage: BrandAssets.openAI(size: 22))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Codex 官方登录")
+                        .font(.headline)
+                    Text(account?.email ?? "尚未识别当前官方账号")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+                Spacer()
+                if store.isRefreshing { ProgressView().controlSize(.small) }
+                Text(service.codexRoutingEnabled ? "备用线路" : "当前线路")
+                    .font(.caption2.bold())
+                    .foregroundStyle(service.codexRoutingEnabled ? Color.secondary : Color.blue)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 3)
+                    .background((service.codexRoutingEnabled ? Color.secondary : Color.blue).opacity(0.12), in: Capsule())
+            }
+
+            if let quota = store.snapshot.codexWeekly {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("官方账号周额度")
+                            .font(.caption.weight(.medium))
+                        Text(officialResetText(quota))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    BatteryGauge(remaining: quota.remainingPercent)
+                }
+            } else if let error = store.snapshot.codexError {
+                Label(error, systemImage: "exclamationmark.triangle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                HStack(spacing: 7) {
+                    ProgressView().controlSize(.small)
+                    Text("正在读取官方账号状态…")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+        }
+        .padding(15)
+        .background(.quaternary.opacity(0.55), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    private var appControls: some View {
+        HStack(spacing: 14) {
+            Toggle("登录时启动", isOn: Binding(
+                get: { launchAtLogin },
+                set: setLaunchAtLogin
+            ))
+            .toggleStyle(.switch)
+            .controlSize(.small)
+
+            Text("官方额度每 5 分钟自动刷新")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Spacer()
+            Button("退出 AgentHub") { NSApplication.shared.terminate(nil) }
+        }
+        .padding(.top, 2)
+    }
+
+    private func officialResetText(_ quota: QuotaWindow) -> String {
+        guard let reset = quota.resetsAt else { return "剩余 \(Int(quota.remainingPercent.rounded()))% · 暂无重置时间" }
+        let interval = max(0, reset.timeIntervalSinceNow)
+        let formatter = DateComponentsFormatter()
+        formatter.unitsStyle = .abbreviated
+        formatter.allowedUnits = interval >= 86_400 ? [.day, .hour] : [.hour, .minute]
+        formatter.maximumUnitCount = 2
+        let duration = formatter.string(from: interval) ?? "很快"
+        return "剩余 \(Int(quota.remainingPercent.rounded()))% · \(duration) 后重置"
+    }
+
+    private func setLaunchAtLogin(_ enabled: Bool) {
+        do {
+            if enabled { try SMAppService.mainApp.register() }
+            else { try SMAppService.mainApp.unregister() }
+            launchAtLogin = enabled
+        } catch {
+            launchAtLogin = SMAppService.mainApp.status == .enabled
         }
     }
 

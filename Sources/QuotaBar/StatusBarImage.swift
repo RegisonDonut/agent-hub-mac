@@ -1,18 +1,16 @@
 import AppKit
 
 enum StatusBarImage {
-    static func make(codexRemaining: Double?, claudeRemaining: Double?) -> NSImage {
-        let size = NSSize(width: 124, height: 18)
-        let image = NSImage(size: size, flipped: false) { rect in
+    static func make(codexRemaining: Double?) -> NSImage {
+        let size = NSSize(width: 60, height: 18)
+        let image = NSImage(size: size, flipped: false) { _ in
             NSGraphicsContext.current?.imageInterpolation = .high
             BrandAssets.openAI(size: 14).draw(in: NSRect(x: 0, y: 2, width: 14, height: 14))
             drawProgress(remaining: codexRemaining, x: 18, y: 2, width: 40, height: 14)
-            BrandAssets.claude(size: 14).draw(in: NSRect(x: 66, y: 2, width: 14, height: 14))
-            drawProgress(remaining: claudeRemaining, x: 84, y: 2, width: 40, height: 14)
             return true
         }
         image.isTemplate = false
-        image.accessibilityDescription = "Codex 周额度与 Claude Code 五小时额度"
+        image.accessibilityDescription = "Codex 周额度"
         return image
     }
 
@@ -26,7 +24,11 @@ enum StatusBarImage {
         let clamped = min(100, max(0, remaining ?? 0))
         let fillWidth = max(0, (width - 4) * CGFloat(clamped / 100))
         if fillWidth > 0 {
-            let fill = NSBezierPath(roundedRect: NSRect(x: x + 2, y: y + 2, width: fillWidth, height: height - 4), xRadius: 1.5, yRadius: 1.5)
+            let fill = NSBezierPath(
+                roundedRect: NSRect(x: x + 2, y: y + 2, width: fillWidth, height: height - 4),
+                xRadius: 1.5,
+                yRadius: 1.5
+            )
             quotaColor(for: remaining).withAlphaComponent(0.62).setFill()
             fill.fill()
         }

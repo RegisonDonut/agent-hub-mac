@@ -11,11 +11,12 @@ struct QuotaWindow: Codable, Equatable, Sendable {
 }
 
 enum CodingProvider: String, Codable, CaseIterable, Sendable {
-    case claudeCode
+    // Kept only so older accounts.json files remain decodable during migration.
+    case legacyUnsupported = "claudeCode"
     case codex
 
-    var displayName: String { self == .claudeCode ? "Claude Code" : "Codex" }
-    var companyName: String { self == .claudeCode ? "Anthropic" : "OpenAI" }
+    var displayName: String { self == .codex ? "Codex" : "不再支持的旧账号" }
+    var companyName: String { self == .codex ? "OpenAI" : "" }
 }
 
 enum AccountAvailability: Equatable, Sendable {
@@ -111,20 +112,10 @@ struct AccountRecord: Codable, Equatable, Identifiable, Sendable {
 
 struct QuotaSnapshot: Equatable, Sendable {
     var codexWeekly: QuotaWindow?
-    var claudeSession: QuotaWindow?
-    var claudeWeekly: QuotaWindow?
     var refreshedAt: Date?
     var codexError: String?
-    var claudeError: String?
 
     static let empty = QuotaSnapshot()
-
-    var claudeSessionForDisplay: QuotaWindow? {
-        guard let session = claudeSession else { return nil }
-        guard let weekly = claudeWeekly, weekly.remainingPercent <= 0 else { return session }
-        return QuotaWindow(usedPercent: 100, resetsAt: weekly.resetsAt, windowName: session.windowName)
-    }
-
 }
 
 enum QuotaError: LocalizedError {

@@ -18,8 +18,37 @@ struct ManagedCodexAccount: Identifiable, Equatable {
     var isEnabled: Bool { status == "active" }
     var hasVerifiedQuota: Bool { weeklyUsedPercent != nil && usageUpdatedAt != nil }
     var isQuotaExhausted: Bool { weeklyUsedPercent.map { $0 >= 100 } ?? false }
+    var weeklyRemainingPercent: Double? {
+        weeklyUsedPercent.map { min(100, max(0, 100 - $0)) }
+    }
     var isAvailable: Bool {
         isEnabled && schedulable && hasVerifiedQuota && !isQuotaExhausted
+    }
+
+    static func displayOrder(_ lhs: Self, _ rhs: Self) -> Bool {
+        let leftRank = lhs.sortRank
+        let rightRank = rhs.sortRank
+        if leftRank != rightRank { return leftRank < rightRank }
+
+        switch leftRank {
+        case 0:
+            let leftRemaining = lhs.weeklyRemainingPercent ?? 0
+            let rightRemaining = rhs.weeklyRemainingPercent ?? 0
+            if leftRemaining != rightRemaining { return leftRemaining > rightRemaining }
+        case 1:
+            let leftReset = lhs.weeklyResetAt ?? .distantFuture
+            let rightReset = rhs.weeklyResetAt ?? .distantFuture
+            if leftReset != rightReset { return leftReset < rightReset }
+        default:
+            break
+        }
+        return lhs.id > rhs.id
+    }
+
+    private var sortRank: Int {
+        guard isEnabled else { return 3 }
+        guard hasVerifiedQuota else { return 2 }
+        return (weeklyRemainingPercent ?? 0) > 0 ? 0 : 1
     }
 }
 
@@ -252,7 +281,7 @@ final class Sub2APIServiceManager: ObservableObject {
               let items = page["items"] as? [[String: Any]] else {
             throw QuotaError.processFailed("无法读取 Codex 账号列表")
         }
-        return items.compactMap(Self.parseManagedCodexAccount)
+        return items.compactMap(Self.parseManagedCodexAccount).sorted(by: ManagedCodexAccount.displayOrder)
     }
 
     func beginCodexAccountLogin() async {

@@ -1,29 +1,102 @@
+import AppKit
+import Combine
 import SwiftUI
 
 @main
 struct AgentHubApp: App {
-    @StateObject private var store = QuotaStore()
-    @StateObject private var sub2API = Sub2APIServiceManager()
+    @NSApplicationDelegateAdaptor(AgentHubAppDelegate.self) private var appDelegate
 
     var body: some Scene {
-        MenuBarExtra {
-            QuotaPanelView(store: store, sub2API: sub2API)
-                .task {
-                    store.start()
-                    sub2API.start()
-                }
-        } label: {
-            StatusLabelView(store: store)
-                .task {
-                    store.start()
-                    sub2API.start()
-                }
+        Settings {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
+    }
+}
 
-        Window("Codex 多账号管理", id: "sub2api-manager") {
-            Sub2APIManagerView(service: sub2API)
+@MainActor
+final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
+    private let store = QuotaStore()
+    private let sub2API = Sub2APIServiceManager()
+    private var statusItem: NSStatusItem?
+    private var managerWindow: NSWindow?
+    private var cancellables: Set<AnyCancellable> = []
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApplication.shared.setActivationPolicy(.accessory)
+        installStatusItem()
+        observeStatusData()
+        store.start()
+        sub2API.start()
+        Task { [weak self] in
+            guard let self else { return }
+            for _ in 0..<90 where !sub2API.state.isRunning {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+            await sub2API.refreshManagedCodexAccounts()
         }
-        .defaultSize(width: 900, height: 720)
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openCodexManager()
+        return true
+    }
+
+    private func installStatusItem() {
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        guard let button = item.button else { return }
+        button.target = self
+        button.action = #selector(openCodexManager)
+        button.sendAction(on: [.leftMouseUp])
+        button.imagePosition = .imageOnly
+        statusItem = item
+        updateStatusItem()
+    }
+
+    private func observeStatusData() {
+        store.$snapshot
+            .combineLatest(sub2API.$managedCodexAccounts, sub2API.$codexRoutingEnabled)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _, _, _ in self?.updateStatusItem() }
+            .store(in: &cancellables)
+    }
+
+    private func updateStatusItem() {
+        let remaining: Double?
+        if sub2API.codexRoutingEnabled {
+            remaining = sub2API.managedCodexAccounts
+                .filter { $0.isEnabled && $0.hasVerifiedQuota }
+                .compactMap(\.weeklyRemainingPercent)
+                .max()
+        } else {
+            remaining = store.snapshot.codexWeekly?.remainingPercent
+        }
+        statusItem?.button?.image = StatusBarImage.make(codexRemaining: remaining)
+        statusItem?.button?.toolTip = sub2API.codexRoutingEnabled
+            ? "Codex 多账号 · 点击打开管理"
+            : "Codex 官方登录 · 点击打开管理"
+    }
+
+    @objc private func openCodexManager() {
+        let window: NSWindow
+        if let existing = managerWindow {
+            window = existing
+        } else {
+            let content = Sub2APIManagerView(service: sub2API, store: store)
+            let created = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 980, height: 760),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            created.title = "Codex 多账号管理"
+            created.contentView = NSHostingView(rootView: content)
+            created.isReleasedWhenClosed = false
+            created.setFrameAutosaveName("AgentHubCodexManager")
+            created.center()
+            managerWindow = created
+            window = created
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        window.makeKeyAndOrderFront(nil)
     }
 }
