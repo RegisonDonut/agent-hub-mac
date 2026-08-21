@@ -33,7 +33,7 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
             for _ in 0..<90 where !sub2API.state.isRunning {
                 try? await Task.sleep(nanoseconds: 1_000_000_000)
             }
-            await sub2API.refreshManagedCodexAccounts()
+            await sub2API.refreshManagedCodexAccounts(forceQuotaRefresh: true)
         }
     }
 
@@ -55,16 +55,23 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
 
     private func observeStatusData() {
         store.$snapshot
-            .combineLatest(sub2API.$managedCodexAccounts, sub2API.$codexRoutingEnabled)
+            .combineLatest(
+                sub2API.$managedCodexAccounts,
+                sub2API.$codexRoutingEnabled,
+                sub2API.$quotaRefreshErrors
+            )
             .receive(on: RunLoop.main)
-            .sink { [weak self] _, _, _ in self?.updateStatusItem() }
+            .sink { [weak self] _, _, _, _ in self?.updateStatusItem() }
             .store(in: &cancellables)
     }
 
     private func updateStatusItem() {
         let remaining: Double?
         if sub2API.codexRoutingEnabled {
-            remaining = ManagedCodexAccount.poolRemainingPercent(sub2API.managedCodexAccounts)
+            remaining = ManagedCodexAccount.poolRemainingPercent(
+                sub2API.managedCodexAccounts,
+                excludingAccountIDs: Set(sub2API.quotaRefreshErrors.keys)
+            )
         } else {
             remaining = store.snapshot.codexWeekly?.remainingPercent
         }

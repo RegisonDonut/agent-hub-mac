@@ -237,18 +237,33 @@ enum ExecutableLocator {
     }
 
     static func find(_ name: String) -> URL? {
-        if name == "codex", let bundled = bundledCodex(),
-           FileManager.default.isExecutableFile(atPath: bundled.path) {
-            return bundled
-        }
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [
             "\(home)/.local/bin/\(name)",
             "/opt/homebrew/bin/\(name)",
             "/usr/local/bin/\(name)",
             "/usr/bin/\(name)"
-        ]
-        return candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }).map(URL.init(fileURLWithPath:))
+        ].map(URL.init(fileURLWithPath:))
+        let installed = candidates.filter { FileManager.default.isExecutableFile(atPath: $0.path) }
+        guard name == "codex" else { return installed.first }
+
+        // Never replace a Codex installation managed by the user. An AgentHub
+        // symlink is ignored here so a later Homebrew/npm installation wins too.
+        if let userInstalled = installed.first(where: { !isAgentHubManagedCodexLink($0) }) {
+            return userInstalled
+        }
+        if let bundled = bundledCodex(), FileManager.default.isExecutableFile(atPath: bundled.path) {
+            return bundled
+        }
+        return installed.first
+    }
+
+    private static func isAgentHubManagedCodexLink(_ url: URL) -> Bool {
+        let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey])
+        guard values?.isSymbolicLink == true,
+              let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path)
+        else { return false }
+        return destination.contains("AgentHub.app/Contents/Resources/BundledRuntime")
     }
 
     private static func bundledCodex() -> URL? {

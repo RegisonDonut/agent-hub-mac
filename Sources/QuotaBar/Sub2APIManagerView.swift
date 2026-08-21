@@ -23,7 +23,7 @@ struct Sub2APIManagerView: View {
             store.start()
             service.start()
             await store.refresh()
-            await service.refreshManagedCodexAccounts()
+            await service.refreshManagedCodexAccounts(forceQuotaRefresh: true)
         }
     }
 
@@ -189,7 +189,7 @@ struct Sub2APIManagerView: View {
             .toggleStyle(.switch)
             .controlSize(.small)
 
-            Text("官方额度每 5 分钟自动刷新")
+            Text("官方与多账号额度每 5 分钟自动刷新")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()

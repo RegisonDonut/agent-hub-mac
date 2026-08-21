@@ -45,8 +45,12 @@ struct ManagedCodexAccount: Identifiable, Equatable {
         return lhs.id > rhs.id
     }
 
-    static func poolRemainingPercent(_ accounts: [Self]) -> Double? {
+    static func poolRemainingPercent(
+        _ accounts: [Self],
+        excludingAccountIDs: Set<Int> = []
+    ) -> Double? {
         let availableRemaining = accounts
+            .filter { !excludingAccountIDs.contains($0.id) }
             .filter(\.isAvailable)
             .compactMap(\.weeklyRemainingPercent)
         if !availableRemaining.isEmpty {
@@ -54,7 +58,9 @@ struct ManagedCodexAccount: Identifiable, Equatable {
         }
 
         // A verified pool with no callable account is exhausted/unavailable, not unknown.
-        let hasVerifiedEnabledAccount = accounts.contains { $0.isEnabled && $0.hasVerifiedQuota }
+        let hasVerifiedEnabledAccount = accounts.contains {
+            !excludingAccountIDs.contains($0.id) && $0.isEnabled && $0.hasVerifiedQuota
+        }
         return hasVerifiedEnabledAccount ? 0 : nil
     }
 
@@ -113,6 +119,7 @@ final class Sub2APIServiceManager: ObservableObject {
     static let pinnedVersion = "0.1.179"
     static let hostPort = 18_080
     static let codexProviderID = "agenthub_multiaccount"
+    static let managedQuotaRefreshInterval: TimeInterval = 5 * 60
 
     @Published private(set) var state: Sub2APIServiceState = .stopped
     @Published private(set) var adminEmail = "admin@agenthub.local"
@@ -173,9 +180,14 @@ final class Sub2APIServiceManager: ObservableObject {
         lifecycleTask = Task { [weak self] in
             guard let self else { return }
             await startService()
+            var nextQuotaRefreshAt = Date().addingTimeInterval(Self.managedQuotaRefreshInterval)
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
                 await refreshState()
+                if state.isRunning, Date() >= nextQuotaRefreshAt {
+                    await refreshManagedCodexAccounts(forceQuotaRefresh: true)
+                    nextQuotaRefreshAt = Date().addingTimeInterval(Self.managedQuotaRefreshInterval)
+                }
             }
         }
     }

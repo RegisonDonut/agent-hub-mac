@@ -168,6 +168,10 @@ final class AgentHubTests: XCTestCase {
             account(id: 1, remaining: 0),
             account(id: 2, remaining: 0)
         ]), 0)
+        XCTAssertEqual(ManagedCodexAccount.poolRemainingPercent([
+            account(id: 1, remaining: 80),
+            account(id: 2, remaining: 40)
+        ], excludingAccountIDs: [1]), 40)
         XCTAssertNil(ManagedCodexAccount.poolRemainingPercent([
             account(id: 1, remaining: nil)
         ]))
@@ -177,6 +181,7 @@ final class AgentHubTests: XCTestCase {
     func testSub2APIStackIsPinnedAndLocalOnly() {
         let compose = Sub2APIServiceManager.composeFile
         XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.1.179")
+        XCTAssertEqual(Sub2APIServiceManager.managedQuotaRefreshInterval, 300)
         XCTAssertTrue(compose.contains("weishaw/sub2api:${SUB2API_VERSION}"))
         XCTAssertTrue(compose.contains("127.0.0.1:${SERVER_PORT}:8080"))
         XCTAssertFalse(compose.contains("0.0.0.0:${SERVER_PORT}:8080"))
@@ -235,9 +240,14 @@ final class AgentHubTests: XCTestCase {
         XCTAssertFalse(session.accessToken.isEmpty)
         await service.refreshManagedCodexAccounts(forceQuotaRefresh: true)
         XCTAssertFalse(service.managedCodexAccounts.isEmpty)
-        XCTAssertTrue(service.quotaRefreshErrors.isEmpty)
         for account in service.managedCodexAccounts where account.isEnabled {
             XCTAssertTrue(account.hasVerifiedQuota)
+            if service.quotaRefreshErrors[account.id] != nil {
+                XCTAssertNil(ManagedCodexAccount.poolRemainingPercent(
+                    [account],
+                    excludingAccountIDs: [account.id]
+                ))
+            }
             if account.isQuotaExhausted {
                 XCTAssertFalse(account.isAvailable)
             }
