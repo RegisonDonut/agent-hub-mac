@@ -17,7 +17,6 @@ struct Sub2APIManagerView: View {
             } else if service.state.isRunning {
                 Sub2APIWebView(
                     service: service,
-                    url: service.baseURL.appendingPathComponent("admin/accounts"),
                     reloadToken: reloadToken
                 )
             } else {
@@ -144,7 +143,6 @@ struct Sub2APIManagerView: View {
 
 private struct Sub2APIWebView: NSViewRepresentable {
     let service: Sub2APIServiceManager
-    let url: URL
     let reloadToken: UUID
 
     func makeCoordinator() -> Coordinator { Coordinator(service: service) }
@@ -157,34 +155,42 @@ private struct Sub2APIWebView: NSViewRepresentable {
         webView.navigationDelegate = context.coordinator
         webView.uiDelegate = context.coordinator
         context.coordinator.lastReloadToken = reloadToken
-        webView.load(URLRequest(url: url))
+        webView.load(URLRequest(url: service.baseURL.appendingPathComponent("login")))
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         if context.coordinator.lastReloadToken != reloadToken {
             context.coordinator.lastReloadToken = reloadToken
-            webView.load(URLRequest(url: url))
+            context.coordinator.prepareForSessionBootstrap()
+            webView.load(URLRequest(url: service.baseURL.appendingPathComponent("login")))
         }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
         private let service: Sub2APIServiceManager
         private var isEstablishingSession = false
+        private var hasEstablishedSession = false
         var lastReloadToken = UUID()
 
         init(service: Sub2APIServiceManager) {
             self.service = service
         }
 
+        func prepareForSessionBootstrap() {
+            hasEstablishedSession = false
+            isEstablishingSession = false
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            guard webView.url?.path == "/login", !isEstablishingSession else { return }
+            guard !hasEstablishedSession, !isEstablishingSession else { return }
             isEstablishingSession = true
             Task { @MainActor [weak self, weak webView] in
                 guard let self, let webView else { return }
                 do {
                     let session = try await service.createAdminWebSession()
                     _ = try await webView.evaluateJavaScript(session.bootstrapJavaScript)
+                    hasEstablishedSession = true
                     isEstablishingSession = false
                 } catch {
                     isEstablishingSession = false
