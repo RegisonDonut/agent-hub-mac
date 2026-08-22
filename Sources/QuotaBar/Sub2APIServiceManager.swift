@@ -25,6 +25,22 @@ struct ManagedCodexAccount: Identifiable, Equatable {
         isEnabled && schedulable && hasVerifiedQuota && !isQuotaExhausted
     }
 
+    func applying(_ snapshot: ManagedCodexQuotaSnapshot) -> Self {
+        Self(
+            id: id,
+            name: name,
+            email: snapshot.email ?? email,
+            planType: snapshot.planType ?? planType,
+            status: status,
+            schedulable: schedulable,
+            fiveHourUsedPercent: snapshot.fiveHourUsedPercent,
+            weeklyUsedPercent: snapshot.weeklyUsedPercent,
+            fiveHourResetAt: snapshot.fiveHourResetAt,
+            weeklyResetAt: snapshot.weeklyResetAt,
+            usageUpdatedAt: snapshot.fetchedAt
+        )
+    }
+
     static func displayOrder(_ lhs: Self, _ rhs: Self) -> Bool {
         let leftRank = lhs.sortRank
         let rightRank = rhs.sortRank
@@ -71,6 +87,16 @@ struct ManagedCodexAccount: Identifiable, Equatable {
     }
 }
 
+struct ManagedCodexQuotaSnapshot: Equatable {
+    let email: String?
+    let planType: String?
+    let fiveHourUsedPercent: Double?
+    let weeklyUsedPercent: Double?
+    let fiveHourResetAt: Date?
+    let weeklyResetAt: Date?
+    let fetchedAt: Date
+}
+
 struct CodexOAuthLoginFlow: Codable, Equatable {
     let authorizationURL: URL
     let sessionID: String
@@ -82,6 +108,24 @@ struct CodexOAuthLoginFlow: Codable, Equatable {
 
 struct Sub2APIAdminSession {
     let accessToken: String
+}
+
+struct Sub2APIRequestError: LocalizedError, Equatable {
+    let httpStatus: Int
+    let serverCode: Int
+    let reason: String?
+    let message: String
+
+    var errorDescription: String? { message }
+
+    var isExpiredOAuthToken: Bool {
+        guard httpStatus == 401 else { return false }
+        let evidence = [reason, message]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+        return evidence.contains("token_expired")
+            || evidence.contains("authentication token is expired")
+    }
 }
 
 enum Sub2APIServiceState: Equatable {
@@ -268,11 +312,12 @@ final class Sub2APIServiceManager: ObservableObject {
             let accountsToProbe = accounts.filter {
                 $0.isEnabled && (forceQuotaRefresh || !$0.hasVerifiedQuota)
             }
+            var refreshedSnapshots: [Int: ManagedCodexQuotaSnapshot] = [:]
             for account in accountsToProbe {
                 refreshingQuotaAccountIDs.insert(account.id)
                 quotaRefreshErrors[account.id] = nil
                 do {
-                    try await refreshManagedQuotaWithRetry(accountID: account.id)
+                    refreshedSnapshots[account.id] = try await refreshManagedQuotaWithRetry(accountID: account.id)
                 } catch {
                     quotaRefreshErrors[account.id] = error.localizedDescription
                 }
@@ -280,7 +325,10 @@ final class Sub2APIServiceManager: ObservableObject {
             }
 
             if !accountsToProbe.isEmpty {
-                managedCodexAccounts = try await loadManagedCodexAccounts()
+                managedCodexAccounts = try await loadManagedCodexAccounts().map { account in
+                    guard let snapshot = refreshedSnapshots[account.id] else { return account }
+                    return account.applying(snapshot)
+                }.sorted(by: ManagedCodexAccount.displayOrder)
             }
             let failedCount = accountsToProbe.filter { quotaRefreshErrors[$0.id] != nil }.count
             managedAccountsMessage = failedCount == 0
@@ -291,20 +339,59 @@ final class Sub2APIServiceManager: ObservableObject {
         }
     }
 
-    private func refreshManagedQuotaWithRetry(accountID: Int) async throws {
-        var lastError: Error?
-        let delays: [UInt64] = [0, 600_000_000, 1_500_000_000]
-        for delay in delays {
-            if delay > 0 { try await Task.sleep(nanoseconds: delay) }
-            do {
-                _ = try await adminAPI(
+    private func refreshManagedQuotaWithRetry(accountID: Int) async throws -> ManagedCodexQuotaSnapshot {
+        let payload = try await Self.refreshQuotaRecoveringExpiredCredentials(
+            quotaRequest: { [self] in
+                try await adminAPI(
                     path: "/api/v1/admin/openai/accounts/\(accountID)/quota/refresh",
                     method: "POST",
                     body: [:]
                 )
-                return
+            },
+            credentialRefresh: { [self] in
+                _ = try await adminAPI(
+                    path: "/api/v1/admin/openai/accounts/\(accountID)/refresh",
+                    method: "POST",
+                    body: [:]
+                )
+            }
+        )
+        guard let quota = payload as? [String: Any],
+              let snapshot = Self.parseManagedQuotaSnapshot(quota) else {
+            throw QuotaError.processFailed("额度服务返回的数据不完整")
+        }
+        return snapshot
+    }
+
+    static func refreshQuotaRecoveringExpiredCredentials<Result>(
+        retryDelays: [UInt64] = [0, 600_000_000, 1_500_000_000],
+        quotaRequest: () async throws -> Result,
+        credentialRefresh: () async throws -> Void
+    ) async throws -> Result {
+        var lastError: Error?
+        var refreshedCredentials = false
+        var attempt = 0
+
+        while attempt < retryDelays.count {
+            let delay = retryDelays[attempt]
+            if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+            do {
+                return try await quotaRequest()
+            } catch let error as Sub2APIRequestError where error.isExpiredOAuthToken {
+                guard !refreshedCredentials else {
+                    throw QuotaError.processFailed("登录凭据已过期，请重新授权此账号")
+                }
+                do {
+                    try await credentialRefresh()
+                } catch {
+                    throw QuotaError.processFailed("登录凭据已过期，请重新授权此账号")
+                }
+                refreshedCredentials = true
+                // Credential recovery is not a generic retry and should not consume one.
+                continue
             } catch {
                 lastError = error
+                attempt += 1
             }
         }
         throw lastError ?? QuotaError.processFailed("额度验证失败")
@@ -414,29 +501,56 @@ final class Sub2APIServiceManager: ObservableObject {
                 throw QuotaError.processFailed("Codex 授权结果无效")
             }
 
-            let groupID = try await defaultOpenAIGroupID()
             let credentials = Self.openAICredentials(from: tokenInfo)
             let extra = Self.openAIExtra(from: tokenInfo)
             let email = (tokenInfo["email"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
             let accountName = (email?.isEmpty == false ? email! : nil) ?? "Codex 账号"
-            _ = try await adminAPI(
-                path: "/api/v1/admin/accounts",
-                method: "POST",
-                body: [
-                    "name": accountName,
-                    "platform": "openai",
-                    "type": "oauth",
-                    "credentials": credentials,
-                    "extra": extra,
-                    "group_ids": [groupID]
-                ]
-            )
+            let existingAccounts = try await loadManagedCodexAccounts()
+            let matchingAccounts = existingAccounts.filter {
+                Self.normalizedEmail($0.email) == Self.normalizedEmail(accountName)
+            }
+
+            if let canonical = matchingAccounts.min(by: { $0.id < $1.id }) {
+                _ = try await adminAPI(
+                    path: "/api/v1/admin/accounts/\(canonical.id)/apply-oauth-credentials",
+                    method: "POST",
+                    body: [
+                        "type": "oauth",
+                        "credentials": credentials,
+                        "extra": extra
+                    ]
+                )
+                _ = try await refreshManagedQuotaWithRetry(accountID: canonical.id)
+                for duplicate in matchingAccounts where duplicate.id != canonical.id {
+                    _ = try await adminAPI(
+                        path: "/api/v1/admin/accounts/\(duplicate.id)",
+                        method: "DELETE"
+                    )
+                    quotaRefreshErrors[duplicate.id] = nil
+                }
+            } else {
+                let groupID = try await defaultOpenAIGroupID()
+                _ = try await adminAPI(
+                    path: "/api/v1/admin/accounts",
+                    method: "POST",
+                    body: [
+                        "name": accountName,
+                        "platform": "openai",
+                        "type": "oauth",
+                        "credentials": credentials,
+                        "extra": extra,
+                        "group_ids": [groupID]
+                    ]
+                )
+            }
 
             cancelCodexAccountLogin()
             await refreshManagedCodexAccounts()
             try await prepareCodexRoutingKey()
             await setCodexRoutingEnabled(true)
-            managedAccountsMessage = "账号已添加，多账号模式已启用；新启动的 Codex 将自动使用账号池"
+            managedAccountsMessage = matchingAccounts.isEmpty
+                ? "账号已添加，多账号模式已启用；新启动的 Codex 将自动使用账号池"
+                : "账号凭据已更新，重复记录已合并"
         } catch {
             oauthLoginMessage = error.localizedDescription
         }
@@ -484,16 +598,23 @@ final class Sub2APIServiceManager: ObservableObject {
                   let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
                 throw QuotaError.processFailed("本地多账号服务响应无效")
             }
-            if http.statusCode == 401, attempt == 0 {
+            let responseReason = envelope["reason"] as? String
+            let responseMessage = (envelope["detail"] as? String)
+                ?? (envelope["message"] as? String)
+                ?? "请求失败（HTTP \(http.statusCode)）"
+            let requestError = Sub2APIRequestError(
+                httpStatus: http.statusCode,
+                serverCode: (envelope["code"] as? NSNumber)?.intValue ?? -1,
+                reason: responseReason,
+                message: responseMessage
+            )
+            if http.statusCode == 401, attempt == 0, !requestError.isExpiredOAuthToken {
                 cachedAdminSession = nil
                 continue
             }
             let code = (envelope["code"] as? NSNumber)?.intValue ?? -1
             guard (200..<300).contains(http.statusCode), code == 0 else {
-                let details = (envelope["detail"] as? String)
-                    ?? (envelope["message"] as? String)
-                    ?? "请求失败（HTTP \(http.statusCode)）"
-                throw QuotaError.processFailed(details)
+                throw requestError
             }
             return envelope["data"] ?? NSNull()
         }
@@ -593,6 +714,52 @@ final class Sub2APIServiceManager: ObservableObject {
             throw QuotaError.processFailed("回调链接与当前登录会话不匹配，请重新登录")
         }
         return (code, state)
+    }
+
+    static func normalizedEmail(_ value: String) -> String {
+        value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    static func parseManagedQuotaSnapshot(_ payload: [String: Any]) -> ManagedCodexQuotaSnapshot? {
+        let rateLimit = payload["rate_limit"] as? [String: Any]
+        let windows = ["primary_window", "secondary_window"].compactMap {
+            rateLimit?[$0] as? [String: Any]
+        }
+
+        func window(matching predicate: (Double) -> Bool) -> [String: Any]? {
+            windows.first { value in
+                guard let seconds = (value["limit_window_seconds"] as? NSNumber)?.doubleValue else {
+                    return false
+                }
+                return predicate(seconds)
+            }
+        }
+
+        func values(from window: [String: Any]?) -> (Double?, Date?) {
+            guard let window else { return (nil, nil) }
+            let used = (window["used_percent"] as? NSNumber)?.doubleValue
+            let reset = (window["reset_at"] as? NSNumber).map {
+                Date(timeIntervalSince1970: $0.doubleValue)
+            }
+            return (used, reset)
+        }
+
+        let fiveHour = values(from: window { $0 <= 24 * 60 * 60 })
+        let weekly = values(from: window { $0 > 24 * 60 * 60 })
+        guard fiveHour.0 != nil || weekly.0 != nil else { return nil }
+
+        let fetchedAt = (payload["fetched_at"] as? NSNumber)
+            .map { Date(timeIntervalSince1970: $0.doubleValue) }
+            ?? Date()
+        return ManagedCodexQuotaSnapshot(
+            email: (payload["email"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            planType: (payload["plan_type"] as? String).flatMap { $0.isEmpty ? nil : $0 },
+            fiveHourUsedPercent: fiveHour.0,
+            weeklyUsedPercent: weekly.0,
+            fiveHourResetAt: fiveHour.1,
+            weeklyResetAt: weekly.1,
+            fetchedAt: fetchedAt
+        )
     }
 
     private static func openAICredentials(from tokenInfo: [String: Any]) -> [String: Any] {

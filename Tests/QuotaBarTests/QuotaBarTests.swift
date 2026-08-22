@@ -178,6 +178,107 @@ final class AgentHubTests: XCTestCase {
     }
 
     @MainActor
+    func testExpiredQuotaTokenRefreshesCredentialsThenRetriesQuota() async throws {
+        var quotaRequests = 0
+        var credentialRefreshes = 0
+
+        try await Sub2APIServiceManager.refreshQuotaRecoveringExpiredCredentials(
+            retryDelays: [0],
+            quotaRequest: {
+                quotaRequests += 1
+                if quotaRequests == 1 {
+                    throw Sub2APIRequestError(
+                        httpStatus: 401,
+                        serverCode: 401,
+                        reason: "OPENAI_QUOTA_UPSTREAM_ERROR",
+                        message: "Provided authentication token is expired (token_expired)"
+                    )
+                }
+            },
+            credentialRefresh: {
+                credentialRefreshes += 1
+            }
+        )
+
+        XCTAssertEqual(quotaRequests, 2)
+        XCTAssertEqual(credentialRefreshes, 1)
+    }
+
+    @MainActor
+    func testSuccessfulQuotaRequestDoesNotRefreshCredentials() async throws {
+        var quotaRequests = 0
+        var credentialRefreshes = 0
+
+        try await Sub2APIServiceManager.refreshQuotaRecoveringExpiredCredentials(
+            retryDelays: [0],
+            quotaRequest: { quotaRequests += 1 },
+            credentialRefresh: { credentialRefreshes += 1 }
+        )
+
+        XCTAssertEqual(quotaRequests, 1)
+        XCTAssertEqual(credentialRefreshes, 0)
+    }
+
+    @MainActor
+    func testFailedCredentialRefreshRequestsReauthorization() async {
+        do {
+            try await Sub2APIServiceManager.refreshQuotaRecoveringExpiredCredentials(
+                retryDelays: [0],
+                quotaRequest: {
+                    throw Sub2APIRequestError(
+                        httpStatus: 401,
+                        serverCode: 401,
+                        reason: "OPENAI_QUOTA_UPSTREAM_ERROR",
+                        message: "token_expired"
+                    )
+                },
+                credentialRefresh: {
+                    throw Sub2APIRequestError(
+                        httpStatus: 401,
+                        serverCode: 401,
+                        reason: "invalid_grant",
+                        message: "refresh token expired"
+                    )
+                }
+            )
+            XCTFail("Expected reauthorization error")
+        } catch {
+            XCTAssertEqual(error.localizedDescription, "登录凭据已过期，请重新授权此账号")
+        }
+    }
+
+    @MainActor
+    func testEmailNormalizationPreventsDuplicateAccounts() {
+        XCTAssertEqual(
+            Sub2APIServiceManager.normalizedEmail("  Regison.ZZZ@Outlook.COM\n"),
+            "regison.zzz@outlook.com"
+        )
+    }
+
+    @MainActor
+    func testManagedQuotaSnapshotParsesFreshWeeklySubscription() throws {
+        let snapshot = try XCTUnwrap(Sub2APIServiceManager.parseManagedQuotaSnapshot([
+            "email": "regison.zzz@outlook.com",
+            "plan_type": "pro",
+            "rate_limit": [
+                "allowed": true,
+                "primary_window": [
+                    "used_percent": 0,
+                    "limit_window_seconds": 604_800,
+                    "reset_at": 1_788_031_714
+                ]
+            ],
+            "fetched_at": 1_787_426_913
+        ]))
+
+        XCTAssertEqual(snapshot.email, "regison.zzz@outlook.com")
+        XCTAssertEqual(snapshot.planType, "pro")
+        XCTAssertEqual(snapshot.weeklyUsedPercent, 0)
+        XCTAssertNil(snapshot.fiveHourUsedPercent)
+        XCTAssertEqual(snapshot.weeklyResetAt, Date(timeIntervalSince1970: 1_788_031_714))
+    }
+
+    @MainActor
     func testSub2APIStackIsPinnedAndLocalOnly() {
         let compose = Sub2APIServiceManager.composeFile
         XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.1.179")
