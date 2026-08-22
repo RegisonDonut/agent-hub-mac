@@ -120,6 +120,10 @@ final class Sub2APIServiceManager: ObservableObject {
     static let hostPort = 18_080
     static let codexProviderID = "agenthub_multiaccount"
     static let managedQuotaRefreshInterval: TimeInterval = 5 * 60
+    static let resilientSchedulerSettings: [String: Any] = [
+        "openai_advanced_scheduler_enabled": true,
+        "openai_advanced_scheduler_sticky_weighted_enabled": true
+    ]
 
     @Published private(set) var state: Sub2APIServiceState = .stopped
     @Published private(set) var adminEmail = "admin@agenthub.local"
@@ -496,6 +500,14 @@ final class Sub2APIServiceManager: ObservableObject {
         throw QuotaError.processFailed("本地管理会话已过期")
     }
 
+    func configureResilientCodexScheduling() async throws {
+        _ = try await adminAPI(
+            path: "/api/v1/admin/settings",
+            method: "PUT",
+            body: Self.resilientSchedulerSettings
+        )
+    }
+
     private func defaultOpenAIGroupID() async throws -> Int {
         guard let groups = try await adminAPI(
             path: "/api/v1/admin/groups/all",
@@ -704,6 +716,7 @@ final class Sub2APIServiceManager: ObservableObject {
                 guard state.isRunning else {
                     throw QuotaError.processFailed(state.detail ?? "本地多账号服务启动失败")
                 }
+                try await configureResilientCodexScheduling()
                 try await prepareCodexRoutingKey()
             }
             try updateCodexProvider(enabled ? Self.codexProviderID : "openai")
@@ -819,6 +832,9 @@ final class Sub2APIServiceManager: ObservableObject {
             if await isHealthy() {
                 try await enforceLoopbackBinding()
                 state = .running
+                if codexRoutingEnabled {
+                    try await configureResilientCodexScheduling()
+                }
                 return
             }
 
@@ -838,6 +854,9 @@ final class Sub2APIServiceManager: ObservableObject {
             state = .starting("正在等待数据库迁移和服务就绪…")
             try await waitUntilHealthy(timeout: 180)
             state = .running
+            if codexRoutingEnabled {
+                try await configureResilientCodexScheduling()
+            }
         } catch {
             state = .failed(error.localizedDescription)
         }

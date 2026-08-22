@@ -182,6 +182,14 @@ final class AgentHubTests: XCTestCase {
         let compose = Sub2APIServiceManager.composeFile
         XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.1.179")
         XCTAssertEqual(Sub2APIServiceManager.managedQuotaRefreshInterval, 300)
+        XCTAssertEqual(
+            Sub2APIServiceManager.resilientSchedulerSettings["openai_advanced_scheduler_enabled"] as? Bool,
+            true
+        )
+        XCTAssertEqual(
+            Sub2APIServiceManager.resilientSchedulerSettings["openai_advanced_scheduler_sticky_weighted_enabled"] as? Bool,
+            true
+        )
         XCTAssertTrue(compose.contains("weishaw/sub2api:${SUB2API_VERSION}"))
         XCTAssertTrue(compose.contains("127.0.0.1:${SERVER_PORT}:8080"))
         XCTAssertFalse(compose.contains("0.0.0.0:${SERVER_PORT}:8080"))

@@ -229,10 +229,15 @@ struct Sub2APIManagerView: View {
                 Text(service.codexRoutingEnabled ? "当前线路：Codex 多账号" : "当前线路：Codex 官方登录")
                     .font(.headline)
                 Text(service.codexRoutingEnabled
-                    ? "新启动的 Codex 会从下面启用的账号中自动选择"
+                    ? "新线程自动选可用账号；可重建的续聊会在额度耗尽后迁移"
                     : "使用 Codex CLI 当前的官方授权账号")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if service.codexRoutingEnabled {
+                    Text("切换线路前已打开的线程仍使用原线路；进行中的工具调用链无法跨账号迁移。")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
             Spacer()
             if service.isUpdatingCodexRouting {
