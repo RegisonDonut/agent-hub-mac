@@ -68,16 +68,13 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
     private func updateStatusItem() {
         let remaining: Double?
         if sub2API.codexRoutingEnabled {
-            remaining = ManagedCodexAccount.poolRemainingPercent(
-                sub2API.managedCodexAccounts,
-                excludingAccountIDs: Set(sub2API.quotaRefreshErrors.keys)
-            )
+            remaining = ManagedCodexAccount.poolTotalRemainingPercent(sub2API.managedCodexAccounts)
         } else {
             remaining = store.snapshot.codexWeekly?.remainingPercent
         }
         statusItem?.button?.image = StatusBarImage.make(codexRemaining: remaining)
         statusItem?.button?.toolTip = sub2API.codexRoutingEnabled
-            ? "Codex 多账号 · 点击打开管理"
+            ? "Codex 多账号池总剩余额度 · 点击打开管理"
             : "Codex 官方登录 · 点击打开管理"
     }
 

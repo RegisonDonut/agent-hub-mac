@@ -473,7 +473,14 @@ struct Sub2APIManagerView: View {
 
     private func accountStatus(_ account: ManagedCodexAccount) -> (title: String, color: Color) {
         if !account.isEnabled { return ("已停用", .secondary) }
-        if service.isRefreshingQuota(for: account.id) { return ("额度验证中", .orange) }
+        if service.isRefreshingQuota(for: account.id) {
+            if account.hasVerifiedQuota {
+                return account.isQuotaExhausted
+                    ? ("正在更新 · 上次已用完", .red)
+                    : ("正在更新 · 上次可用", .green)
+            }
+            return ("额度验证中", .orange)
+        }
         if service.quotaRefreshErrors[account.id] != nil { return ("额度未知", .orange) }
         if !account.hasVerifiedQuota { return ("额度未验证", .secondary) }
         if account.isQuotaExhausted { return ("额度已用完", .red) }

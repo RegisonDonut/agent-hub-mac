@@ -41,6 +41,23 @@ struct ManagedCodexAccount: Identifiable, Equatable {
         )
     }
 
+    func preservingStableRefreshState(from previous: Self?) -> Self {
+        guard let previous, previous.hasVerifiedQuota else { return self }
+        return Self(
+            id: id,
+            name: name,
+            email: email,
+            planType: planType ?? previous.planType,
+            status: status,
+            schedulable: previous.schedulable,
+            fiveHourUsedPercent: previous.fiveHourUsedPercent,
+            weeklyUsedPercent: previous.weeklyUsedPercent,
+            fiveHourResetAt: previous.fiveHourResetAt,
+            weeklyResetAt: previous.weeklyResetAt,
+            usageUpdatedAt: previous.usageUpdatedAt
+        )
+    }
+
     static func displayOrder(_ lhs: Self, _ rhs: Self) -> Bool {
         let leftRank = lhs.sortRank
         let rightRank = rhs.sortRank
@@ -61,23 +78,13 @@ struct ManagedCodexAccount: Identifiable, Equatable {
         return lhs.id > rhs.id
     }
 
-    static func poolRemainingPercent(
-        _ accounts: [Self],
-        excludingAccountIDs: Set<Int> = []
-    ) -> Double? {
-        let availableRemaining = accounts
-            .filter { !excludingAccountIDs.contains($0.id) }
-            .filter(\.isAvailable)
+    static func poolTotalRemainingPercent(_ accounts: [Self]) -> Double? {
+        let verifiedRemaining = accounts
+            .filter(\.isEnabled)
+            .filter(\.hasVerifiedQuota)
             .compactMap(\.weeklyRemainingPercent)
-        if !availableRemaining.isEmpty {
-            return availableRemaining.reduce(0, +) / Double(availableRemaining.count)
-        }
-
-        // A verified pool with no callable account is exhausted/unavailable, not unknown.
-        let hasVerifiedEnabledAccount = accounts.contains {
-            !excludingAccountIDs.contains($0.id) && $0.isEnabled && $0.hasVerifiedQuota
-        }
-        return hasVerifiedEnabledAccount ? 0 : nil
+        guard !verifiedRemaining.isEmpty else { return nil }
+        return verifiedRemaining.reduce(0, +)
     }
 
     private var sortRank: Int {
@@ -303,7 +310,11 @@ final class Sub2APIServiceManager: ObservableObject {
         defer { isRefreshingManagedAccounts = false }
 
         do {
-            let accounts = try await loadManagedCodexAccounts()
+            let previousByID = Dictionary(uniqueKeysWithValues: managedCodexAccounts.map { ($0.id, $0) })
+            let freshAccounts = try await loadManagedCodexAccounts()
+            let accounts = freshAccounts.map {
+                $0.preservingStableRefreshState(from: previousByID[$0.id])
+            }.sorted(by: ManagedCodexAccount.displayOrder)
             managedCodexAccounts = accounts
 
             // `schedulable` only means that Sub2API has administratively enabled the
@@ -333,7 +344,7 @@ final class Sub2APIServiceManager: ObservableObject {
             let failedCount = accountsToProbe.filter { quotaRefreshErrors[$0.id] != nil }.count
             managedAccountsMessage = failedCount == 0
                 ? nil
-                : "有 \(failedCount) 个账号的额度验证失败；失败账号不会参与可用状态判断"
+                : "有 \(failedCount) 个账号更新失败；继续显示其上次已验证额度"
         } catch {
             managedAccountsMessage = error.localizedDescription
         }

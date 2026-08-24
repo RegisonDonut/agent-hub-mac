@@ -10,7 +10,7 @@ enum StatusBarImage {
             return true
         }
         image.isTemplate = false
-        image.accessibilityDescription = "Codex 周额度"
+        image.accessibilityDescription = "Codex 账号池总剩余额度"
         return image
     }
 
@@ -21,8 +21,7 @@ enum StatusBarImage {
         NSColor.labelColor.withAlphaComponent(0.72).setStroke()
         outline.stroke()
 
-        let clamped = min(100, max(0, remaining ?? 0))
-        let fillWidth = max(0, (width - 4) * CGFloat(clamped / 100))
+        let fillWidth = max(0, (width - 4) * CGFloat(fillFraction(for: remaining)))
         if fillWidth > 0 {
             let fill = NSBezierPath(
                 roundedRect: NSRect(x: x + 2, y: y + 2, width: fillWidth, height: height - 4),
@@ -33,7 +32,7 @@ enum StatusBarImage {
             fill.fill()
         }
 
-        let value = remaining.map { "\(Int($0.rounded()))%" } ?? "--"
+        let value = displayText(for: remaining)
         let attributes: [NSAttributedString.Key: Any] = [
             .font: NSFont.monospacedDigitSystemFont(ofSize: 8, weight: .bold),
             .foregroundColor: NSColor.labelColor
@@ -43,6 +42,14 @@ enum StatusBarImage {
             at: NSPoint(x: x + (width - textSize.width) / 2, y: y + (height - textSize.height) / 2 - 0.5),
             withAttributes: attributes
         )
+    }
+
+    static func fillFraction(for remaining: Double?) -> Double {
+        min(1, max(0, (remaining ?? 0) / 100))
+    }
+
+    static func displayText(for remaining: Double?) -> String {
+        remaining.map { "\(Int($0.rounded()))%" } ?? "--"
     }
 
     private static func quotaColor(for remaining: Double?) -> NSColor {

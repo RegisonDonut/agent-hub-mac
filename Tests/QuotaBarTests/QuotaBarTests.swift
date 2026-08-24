@@ -10,12 +10,19 @@ final class AgentHubTests: XCTestCase {
     }
 
     func testBrandMarksAndStatusImageRender() throws {
-        for image in [BrandAssets.openAI(size: 18), StatusBarImage.make(codexRemaining: 52)] {
+        for image in [
+            BrandAssets.openAI(size: 18),
+            StatusBarImage.make(codexRemaining: 52),
+            StatusBarImage.make(codexRemaining: 600)
+        ] {
             let tiff = try XCTUnwrap(image.tiffRepresentation)
             let bitmap = try XCTUnwrap(NSBitmapImageRep(data: tiff))
             XCTAssertGreaterThan(bitmap.pixelsWide, 0)
             XCTAssertGreaterThan(bitmap.pixelsHigh, 0)
         }
+        XCTAssertEqual(StatusBarImage.displayText(for: 553), "553%")
+        XCTAssertEqual(StatusBarImage.fillFraction(for: 553), 1)
+        XCTAssertEqual(StatusBarImage.fillFraction(for: 42), 0.42, accuracy: 0.001)
     }
 
     func testAccountHistoryPersistsQuotas() throws {
@@ -136,7 +143,7 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(sorted.map(\.id), [3, 2, 4, 1, 5, 6])
     }
 
-    func testManagedCodexPoolRemainingUsesEqualAverageOfCallableAccounts() {
+    func testManagedCodexPoolRemainingAddsAllVerifiedEnabledAccounts() {
         let now = Date()
         func account(id: Int, remaining: Double?, enabled: Bool = true, schedulable: Bool = true) -> ManagedCodexAccount {
             ManagedCodexAccount(
@@ -154,27 +161,60 @@ final class AgentHubTests: XCTestCase {
             )
         }
 
-        XCTAssertEqual(ManagedCodexAccount.poolRemainingPercent([
+        XCTAssertEqual(ManagedCodexAccount.poolTotalRemainingPercent([
             account(id: 1, remaining: 60),
             account(id: 2, remaining: 80)
-        ]), 70)
-        XCTAssertEqual(ManagedCodexAccount.poolRemainingPercent([
+        ]), 140)
+        XCTAssertEqual(ManagedCodexAccount.poolTotalRemainingPercent([
             account(id: 1, remaining: 60),
             account(id: 2, remaining: 0),
             account(id: 3, remaining: 90, enabled: false),
             account(id: 4, remaining: 90, schedulable: false)
-        ]), 60)
-        XCTAssertEqual(ManagedCodexAccount.poolRemainingPercent([
+        ]), 150, "Temporary scheduler state must not erase verified quota")
+        XCTAssertEqual(ManagedCodexAccount.poolTotalRemainingPercent([
             account(id: 1, remaining: 0),
             account(id: 2, remaining: 0)
         ]), 0)
-        XCTAssertEqual(ManagedCodexAccount.poolRemainingPercent([
-            account(id: 1, remaining: 80),
-            account(id: 2, remaining: 40)
-        ], excludingAccountIDs: [1]), 40)
-        XCTAssertNil(ManagedCodexAccount.poolRemainingPercent([
+        XCTAssertNil(ManagedCodexAccount.poolTotalRemainingPercent([
             account(id: 1, remaining: nil)
         ]))
+    }
+
+    func testManagedAccountKeepsStableQuotaWhileRefreshStarts() {
+        let checkedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let previous = ManagedCodexAccount(
+            id: 7,
+            name: "person@example.com",
+            email: "person@example.com",
+            planType: "pro",
+            status: "active",
+            schedulable: true,
+            fiveHourUsedPercent: 20,
+            weeklyUsedPercent: 35,
+            fiveHourResetAt: checkedAt.addingTimeInterval(3_600),
+            weeklyResetAt: checkedAt.addingTimeInterval(86_400),
+            usageUpdatedAt: checkedAt
+        )
+        let transient = ManagedCodexAccount(
+            id: 7,
+            name: previous.name,
+            email: previous.email,
+            planType: nil,
+            status: "active",
+            schedulable: false,
+            fiveHourUsedPercent: nil,
+            weeklyUsedPercent: nil,
+            fiveHourResetAt: nil,
+            weeklyResetAt: nil,
+            usageUpdatedAt: nil
+        )
+
+        let displayed = transient.preservingStableRefreshState(from: previous)
+        XCTAssertEqual(displayed.planType, "pro")
+        XCTAssertEqual(displayed.weeklyUsedPercent, 35)
+        XCTAssertEqual(displayed.usageUpdatedAt, checkedAt)
+        XCTAssertTrue(displayed.schedulable)
+        XCTAssertTrue(displayed.isAvailable)
     }
 
     @MainActor
@@ -352,10 +392,7 @@ final class AgentHubTests: XCTestCase {
         for account in service.managedCodexAccounts where account.isEnabled {
             XCTAssertTrue(account.hasVerifiedQuota)
             if service.quotaRefreshErrors[account.id] != nil {
-                XCTAssertNil(ManagedCodexAccount.poolRemainingPercent(
-                    [account],
-                    excludingAccountIDs: [account.id]
-                ))
+                XCTAssertNotNil(ManagedCodexAccount.poolTotalRemainingPercent([account]))
             }
             if account.isQuotaExhausted {
                 XCTAssertFalse(account.isAvailable)
