@@ -17,6 +17,7 @@ struct AgentHubApp: App {
 final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
     private let store = QuotaStore()
     private let sub2API = Sub2APIServiceManager()
+    private let workDurationStore = WorkDurationStore()
     private var statusItem: NSStatusItem?
     private var managerWindow: NSWindow?
     private var cancellables: Set<AnyCancellable> = []
@@ -28,6 +29,7 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
         observeStatusData()
         store.start()
         sub2API.start()
+        workDurationStore.start()
         Task { [weak self] in
             guard let self else { return }
             for _ in 0..<90 where !sub2API.state.isRunning {
@@ -83,14 +85,18 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
         if let existing = managerWindow {
             window = existing
         } else {
-            let content = Sub2APIManagerView(service: sub2API, store: store)
+            let content = AgentHubRootView(
+                service: sub2API,
+                quotaStore: store,
+                workStore: workDurationStore
+            )
             let created = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 980, height: 760),
                 styleMask: [.titled, .closable, .miniaturizable, .resizable],
                 backing: .buffered,
                 defer: false
             )
-            created.title = "Codex 多账号管理"
+            created.title = "AgentHub"
             created.contentView = NSHostingView(rootView: content)
             created.isReleasedWhenClosed = false
             created.setFrameAutosaveName("AgentHubCodexManager")

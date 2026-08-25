@@ -314,8 +314,145 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(snapshot.email, "regison.zzz@outlook.com")
         XCTAssertEqual(snapshot.planType, "pro")
         XCTAssertEqual(snapshot.weeklyUsedPercent, 0)
+        XCTAssertTrue(snapshot.isWeeklyQuotaAvailable)
         XCTAssertNil(snapshot.fiveHourUsedPercent)
         XCTAssertEqual(snapshot.weeklyResetAt, Date(timeIntervalSince1970: 1_788_031_714))
+    }
+
+    @MainActor
+    func testRecoveredWeeklyQuotaClearsStaleRuntimeLimit() {
+        let staleAccount = ManagedCodexAccount(
+            id: 3,
+            name: "account@example.com",
+            email: "account@example.com",
+            planType: "pro",
+            status: "active",
+            schedulable: true,
+            fiveHourUsedPercent: 0,
+            weeklyUsedPercent: 100,
+            fiveHourResetAt: nil,
+            weeklyResetAt: Date().addingTimeInterval(3600),
+            usageUpdatedAt: Date().addingTimeInterval(-3600)
+        )
+        let refreshed = ManagedCodexQuotaSnapshot(
+            email: staleAccount.email,
+            planType: "pro",
+            fiveHourUsedPercent: nil,
+            weeklyUsedPercent: 1,
+            fiveHourResetAt: nil,
+            weeklyResetAt: Date().addingTimeInterval(7 * 24 * 3600),
+            fetchedAt: Date()
+        )
+
+        XCTAssertTrue(Sub2APIServiceManager.shouldRecoverRuntimeState(
+            previous: staleAccount,
+            refreshed: refreshed
+        ))
+
+        let stillExhausted = ManagedCodexQuotaSnapshot(
+            email: staleAccount.email,
+            planType: "pro",
+            fiveHourUsedPercent: nil,
+            weeklyUsedPercent: 100,
+            fiveHourResetAt: nil,
+            weeklyResetAt: refreshed.weeklyResetAt,
+            fetchedAt: Date()
+        )
+        XCTAssertFalse(Sub2APIServiceManager.shouldRecoverRuntimeState(
+            previous: staleAccount,
+            refreshed: stillExhausted
+        ))
+    }
+
+    func testConcurrentWorkSessionsAccumulateIndependently() throws {
+        let calendar = try shanghaiCalendar()
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 24, hour: 0
+        )))
+        let now = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: start))
+        let intervals = [
+            WorkInterval(threadID: "session-a", start: start, end: now),
+            WorkInterval(threadID: "session-b", start: start, end: now)
+        ]
+
+        let snapshot = WorkDurationCalculator.makeSnapshot(
+            intervals: intervals,
+            now: now,
+            calendar: calendar
+        )
+
+        XCTAssertEqual(snapshot.last24Hours, 48 * 3_600, accuracy: 0.001)
+        XCTAssertEqual(snapshot.last7Days, 48 * 3_600, accuracy: 0.001)
+        XCTAssertEqual(snapshot.calendarDays.first(where: { $0.date == start })?.duration, 48 * 3_600)
+    }
+
+    func testCrossMidnightWorkIsSplitByLocalCalendarDay() throws {
+        let calendar = try shanghaiCalendar()
+        let start = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 24, hour: 23
+        )))
+        let end = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 25, hour: 2
+        )))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 25, hour: 3
+        )))
+
+        let snapshot = WorkDurationCalculator.makeSnapshot(
+            intervals: [WorkInterval(threadID: "overnight", start: start, end: end)],
+            now: now,
+            calendar: calendar
+        )
+        let firstDay = calendar.startOfDay(for: start)
+        let secondDay = calendar.startOfDay(for: end)
+
+        XCTAssertEqual(snapshot.calendarDays.first(where: { $0.date == firstDay })?.duration, 3_600)
+        XCTAssertEqual(snapshot.calendarDays.first(where: { $0.date == secondDay })?.duration, 2 * 3_600)
+        XCTAssertEqual(snapshot.last24Hours, 3 * 3_600, accuracy: 0.001)
+    }
+
+    func testOverlappingTurnsInOneSessionAreNotDoubleCounted() {
+        let start = Date(timeIntervalSince1970: 1_787_500_000)
+        let intervals = [
+            WorkInterval(threadID: "same-session", start: start, end: start.addingTimeInterval(3_600)),
+            WorkInterval(
+                threadID: "same-session",
+                start: start.addingTimeInterval(1_800),
+                end: start.addingTimeInterval(5_400)
+            )
+        ]
+
+        let merged = WorkDurationCalculator.mergeWithinThreads(intervals)
+
+        XCTAssertEqual(merged.count, 1)
+        XCTAssertEqual(merged[0].end.timeIntervalSince(merged[0].start), 5_400, accuracy: 0.001)
+    }
+
+    @MainActor
+    func testWorkDashboardRefreshesHourly() {
+        XCTAssertEqual(WorkDurationStore.refreshInterval, 3_600)
+    }
+
+    @MainActor
+    func testLiveWorkHistoryWhenEnabled() async throws {
+        guard ProcessInfo.processInfo.environment["AGENTHUB_WORK_HISTORY_LIVE_TESTS"] == "1" else {
+            throw XCTSkip("Set AGENTHUB_WORK_HISTORY_LIVE_TESTS=1 to read local Codex work history")
+        }
+        let store = WorkDurationStore()
+        await store.refresh()
+
+        XCTAssertNil(store.errorMessage)
+        XCTAssertNotNil(store.snapshot.updatedAt)
+        XCTAssertEqual(store.snapshot.calendarDays.count, 371)
+        XCTAssertGreaterThan(store.snapshot.last24Hours, 0)
+        XCTAssertGreaterThanOrEqual(store.snapshot.last7Days, store.snapshot.last24Hours)
+    }
+
+    private func shanghaiCalendar() throws -> Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.locale = Locale(identifier: "zh_CN")
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "Asia/Shanghai"))
+        return calendar
     }
 
     @MainActor

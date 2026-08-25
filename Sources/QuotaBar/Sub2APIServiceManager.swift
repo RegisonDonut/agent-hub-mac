@@ -102,6 +102,10 @@ struct ManagedCodexQuotaSnapshot: Equatable {
     let fiveHourResetAt: Date?
     let weeklyResetAt: Date?
     let fetchedAt: Date
+
+    var isWeeklyQuotaAvailable: Bool {
+        weeklyUsedPercent.map { $0 < 100 } ?? false
+    }
 }
 
 struct CodexOAuthLoginFlow: Codable, Equatable {
@@ -328,7 +332,15 @@ final class Sub2APIServiceManager: ObservableObject {
                 refreshingQuotaAccountIDs.insert(account.id)
                 quotaRefreshErrors[account.id] = nil
                 do {
-                    refreshedSnapshots[account.id] = try await refreshManagedQuotaWithRetry(accountID: account.id)
+                    let snapshot = try await refreshManagedQuotaWithRetry(accountID: account.id)
+                    if Self.shouldRecoverRuntimeState(previous: account, refreshed: snapshot) {
+                        _ = try await adminAPI(
+                            path: "/api/v1/admin/accounts/\(account.id)/recover-state",
+                            method: "POST",
+                            body: [:]
+                        )
+                    }
+                    refreshedSnapshots[account.id] = snapshot
                 } catch {
                     quotaRefreshErrors[account.id] = error.localizedDescription
                 }
@@ -372,6 +384,13 @@ final class Sub2APIServiceManager: ObservableObject {
             throw QuotaError.processFailed("额度服务返回的数据不完整")
         }
         return snapshot
+    }
+
+    static func shouldRecoverRuntimeState(
+        previous account: ManagedCodexAccount,
+        refreshed snapshot: ManagedCodexQuotaSnapshot
+    ) -> Bool {
+        account.isEnabled && account.isQuotaExhausted && snapshot.isWeeklyQuotaAvailable
     }
 
     static func refreshQuotaRecoveringExpiredCredentials<Result>(
