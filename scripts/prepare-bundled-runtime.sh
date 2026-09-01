@@ -6,6 +6,9 @@ runtime_dir="$project_dir/Resources/BundledRuntime"
 licenses_dir="$runtime_dir/ThirdPartyLicenses"
 codex_version="0.149.0"
 sub2api_version="0.1.179"
+# Must stay in sync with Sub2APIServiceManager.composeFile. scripts/verify-bundle.sh enforces it.
+postgres_image="postgres:18-alpine"
+redis_image="redis:8-alpine"
 work_dir=$(mktemp -d /tmp/agenthub-runtime.XXXXXX)
 trap 'rm -rf "$work_dir"' EXIT
 
@@ -34,9 +37,9 @@ curl -fL --retry 4 https://raw.githubusercontent.com/openai/codex/rust-v${codex_
   -o "$licenses_dir/OpenAI-Codex-Apache-2.0.txt"
 curl -fL --retry 4 https://raw.githubusercontent.com/Wei-Shaw/sub2api/v${sub2api_version}/LICENSE \
   -o "$licenses_dir/Sub2API-LGPL-3.0.txt"
-curl -fL --retry 4 https://raw.githubusercontent.com/postgres/postgres/REL_16_STABLE/COPYRIGHT \
+curl -fL --retry 4 https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/COPYRIGHT \
   -o "$licenses_dir/PostgreSQL.txt"
-curl -fL --retry 4 https://raw.githubusercontent.com/redis/redis/7.4/LICENSE.txt \
+curl -fL --retry 4 https://raw.githubusercontent.com/redis/redis/8.0/LICENSE.txt \
   -o "$licenses_dir/Redis.txt"
 
 if [[ "${1:-}" != "--skip-docker" ]]; then
@@ -44,14 +47,14 @@ if [[ "${1:-}" != "--skip-docker" ]]; then
   for pair in 'arm64 linux/arm64' 'x86_64 linux/amd64'; do
     app_arch=${pair%% *}
     platform=${pair#* }
-    for image in "weishaw/sub2api:${sub2api_version}" postgres:16-alpine redis:7-alpine; do
+    for image in "weishaw/sub2api:${sub2api_version}" "$postgres_image" "$redis_image"; do
       for attempt in 1 2 3; do
         docker pull --platform "$platform" "$image" && break
         if [[ "$attempt" == 3 ]]; then exit 1; fi
         sleep $((attempt * 2))
       done
     done
-    docker save "weishaw/sub2api:${sub2api_version}" postgres:16-alpine redis:7-alpine \
+    docker save "weishaw/sub2api:${sub2api_version}" "$postgres_image" "$redis_image" \
       | gzip -9 > "$runtime_dir/docker-images-${app_arch}.tar.gz"
   done
   if [[ "$(uname -m)" == "arm64" ]]; then
@@ -62,8 +65,8 @@ fi
 printf '%s\n' \
   "OpenAI Codex CLI: ${codex_version}" \
   "Sub2API: ${sub2api_version}" \
-  "PostgreSQL: 16-alpine" \
-  "Redis: 7-alpine" \
+  "PostgreSQL: ${postgres_image#postgres:}" \
+  "Redis: ${redis_image#redis:}" \
   "" \
   "Sub2API source: https://github.com/Wei-Shaw/sub2api/tree/v${sub2api_version}" \
   "Codex source: https://github.com/openai/codex/tree/rust-v${codex_version}" \
