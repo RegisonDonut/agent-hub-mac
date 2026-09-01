@@ -18,4 +18,8 @@ cp -R "$work_dir/unpacked/AgentHub.app" "$install_root/AgentHub.app"
 xattr -dr com.apple.quarantine "$install_root/AgentHub.app" 2>/dev/null || true
 open "$install_root/AgentHub.app"
 
+mkdir -p "$HOME/.local/bin"
+ln -sf "$install_root/AgentHub.app/Contents/Helpers/agenthub-totp" "$HOME/.local/bin/agenthub-totp"
+
 echo "AgentHub 已安装到 $install_root/AgentHub.app"
+echo "agenthub-totp CLI 已链接到 $HOME/.local/bin/agenthub-totp"

@@ -3,6 +3,7 @@ import SwiftUI
 private enum AgentHubPage: String, CaseIterable, Identifiable {
     case quota = "额度管理"
     case dashboard = "数据看板"
+    case totp = "验证码管理"
 
     var id: Self { self }
 }
@@ -12,6 +13,7 @@ struct AgentHubRootView: View {
     @ObservedObject var quotaStore: QuotaStore
     @ObservedObject var workStore: WorkDurationStore
     @ObservedObject var quotaUsageStore: QuotaUsageStore
+    @ObservedObject var totpStore: TOTPStore
     @State private var page: AgentHubPage = .quota
 
     var body: some View {
@@ -24,7 +26,7 @@ struct AgentHubRootView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
-                .frame(width: 260)
+                .frame(width: 390)
                 Spacer()
             }
             .padding(.horizontal, 16)
@@ -41,6 +43,8 @@ struct AgentHubRootView: View {
                     quotaUsageStore: quotaUsageStore,
                     service: service
                 )
+            case .totp:
+                TOTPManagerView(store: totpStore)
             }
         }
         .frame(minWidth: 820, minHeight: 680)

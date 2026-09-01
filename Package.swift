@@ -4,15 +4,30 @@ import PackageDescription
 let package = Package(
     name: "AgentHub",
     platforms: [.macOS(.v13)],
-    products: [.executable(name: "AgentHub", targets: ["AgentHub"])],
+    products: [
+        .executable(name: "AgentHub", targets: ["AgentHub"]),
+        .executable(name: "agenthub-totp", targets: ["AgentHubTOTPCLI"])
+    ],
     targets: [
+        .target(
+            name: "AgentHubTOTPKit",
+            path: "Sources/AgentHubTOTPKit",
+            linkerSettings: [.linkedFramework("Security"), .linkedFramework("LocalAuthentication")]
+        ),
         .executableTarget(
             name: "AgentHub",
-            path: "Sources/QuotaBar"
+            dependencies: ["AgentHubTOTPKit"],
+            path: "Sources/QuotaBar",
+            linkerSettings: [.linkedFramework("Security"), .linkedFramework("LocalAuthentication")]
+        ),
+        .executableTarget(
+            name: "AgentHubTOTPCLI",
+            dependencies: ["AgentHubTOTPKit"],
+            path: "Sources/AgentHubTOTPCLI"
         ),
         .testTarget(
             name: "AgentHubTests",
-            dependencies: ["AgentHub"],
+            dependencies: ["AgentHub", "AgentHubTOTPKit"],
             path: "Tests/QuotaBarTests"
         )
     ]

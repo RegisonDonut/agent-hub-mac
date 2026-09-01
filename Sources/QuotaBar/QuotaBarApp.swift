@@ -19,6 +19,7 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
     private let sub2API = Sub2APIServiceManager()
     private let workDurationStore = WorkDurationStore()
     private let quotaUsageStore = QuotaUsageStore()
+    private let totpStore = TOTPStore()
     private var statusItem: NSStatusItem?
     private var managerWindow: NSWindow?
     private var cancellables: Set<AnyCancellable> = []
@@ -95,7 +96,8 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
                 service: sub2API,
                 quotaStore: store,
                 workStore: workDurationStore,
-                quotaUsageStore: quotaUsageStore
+                quotaUsageStore: quotaUsageStore,
+                totpStore: totpStore
             )
             let created = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 980, height: 760),

@@ -17,6 +17,8 @@ AgentHub 是一个原生 macOS Codex 管理器，统一管理官方 Codex 登录
 - 优先使用用户已经安装的 Codex CLI；只有本机没有 Codex 时才使用 App 内置版本，且不会覆盖现有命令
 - 官方额度和多账号池额度均每 5 分钟自动刷新，并同步更新状态栏
 - 数据看板统计最近 24 小时、最近 7 天有效工作时长，并按本机时区展示月度工作量日历
+- 验证码管理器将 TOTP 密钥写入 Touch ID 保护的 macOS Keychain；AgentHub UI 与 `agenthub-totp` CLI 均可在用户确认后读取当前验证码
+- `agenthub-totp list` 只列出发行方/账号元数据，`agenthub-totp get-by-label AWS regison-donut-totp` 通过 Touch ID 后输出一次性验证码供本地 agent 使用
 - 汇总账号池内所有账号的周额度消耗，提供过去 24 小时与 7 天指标，以及 1 小时、4 小时、按天三档额度分布曲线；合计值可超过 100%
 - 多账号模式自动启用高级调度与粘性加权；普通续聊在原账号耗尽且上下文可重建时迁移到可用账号
 - 登录流程和回调输入可跨窗口关闭保留

@@ -24,6 +24,20 @@ else
   label="Resources/BundledRuntime"
 fi
 
+# Ad hoc signatures cannot carry Apple's restricted application identity and
+# keychain access-group entitlements. macOS rejects the process before launch
+# when those entitlements are embedded without a real signing identity.
+if [[ -n "$target" && -f "$target/Contents/MacOS/AgentHub" ]]; then
+  signature_details="$(codesign -dv --verbose=4 "$target" 2>&1 || true)"
+  if grep -q 'Signature=adhoc' <<<"$signature_details"; then
+    entitlements="$(codesign -d --entitlements :- "$target" 2>/dev/null || true)"
+    if grep -qE '<key>(com\.apple\.application-identifier|keychain-access-groups)</key>' <<<"$entitlements"; then
+      echo "FAILED: ad hoc AgentHub signature contains restricted entitlements" >&2
+      exit 1
+    fi
+  fi
+fi
+
 test -f "$source_file" || { echo "missing $source_file" >&2; exit 1 }
 test -d "$runtime_dir" || { echo "missing $runtime_dir" >&2; exit 1 }
 

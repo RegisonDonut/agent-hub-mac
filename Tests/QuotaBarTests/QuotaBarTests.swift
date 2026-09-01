@@ -1,8 +1,88 @@
 import XCTest
 import AppKit
+import Security
 @testable import AgentHub
+@testable import AgentHubTOTPKit
+
+private final class InMemorySecretStore: TOTPSecretStore {
+    var values: [String: Data] = [:]
+    var readCount = 0
+    func save(secret: Data, for id: String) throws { values[id] = secret }
+    func readSecret(for id: String, reason: String) throws -> Data {
+        readCount += 1
+        guard let value = values[id] else { throw TOTPError.entryNotFound }
+        return value
+    }
+    func deleteSecret(for id: String) throws { values.removeValue(forKey: id) }
+}
+
+private final class RecordingUserPresenceAuthorizer: UserPresenceAuthorizer {
+    var reasons: [String] = []
+    var error: Error?
+
+    func authorize(reason: String) throws {
+        reasons.append(reason)
+        if let error { throw error }
+    }
+}
 
 final class AgentHubTests: XCTestCase {
+    func testKeychainStoreAuthorizesBeforeReadingUnrestrictedItem() throws {
+        let service = "com.regisondonut.AgentHub.test.\(UUID().uuidString)"
+        let account = "entry"
+        let value = Data("secret".utf8)
+        let item: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecValueData as String: value
+        ]
+        XCTAssertEqual(SecItemAdd(item as CFDictionary, nil), errSecSuccess)
+        defer {
+            _ = SecItemDelete([
+                kSecClass as String: kSecClassGenericPassword,
+                kSecAttrService as String: service,
+                kSecAttrAccount as String: account
+            ] as CFDictionary)
+        }
+
+        let authorizer = RecordingUserPresenceAuthorizer()
+        let store = KeychainTOTPSecretStore(service: service, authorizer: authorizer)
+        XCTAssertEqual(try store.readSecret(for: account, reason: "read test"), value)
+        XCTAssertEqual(authorizer.reasons, ["read test"])
+    }
+
+    func testRFC6238TOTPVector() throws {
+        let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        XCTAssertEqual(try TOTPGenerator.code(secret: secret, at: Date(timeIntervalSince1970: 59), digits: 8), "94287082")
+        XCTAssertEqual(try TOTPGenerator.code(secret: secret, at: Date(timeIntervalSince1970: 59), digits: 6), "287082")
+    }
+
+    func testVaultPersistsMetadataWithoutSecretAndReadsThroughSecretStore() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let metadataURL = directory.appendingPathComponent("totp-entries.json")
+        let secrets = InMemorySecretStore()
+        let vault = TOTPVault(metadataURL: metadataURL, secretStore: secrets)
+        let entry = try vault.add(issuer: "AWS", account: "admin", secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+        let raw = try String(contentsOf: metadataURL)
+        XCTAssertFalse(raw.contains("GEZDGNBVGY3TQOJQ"))
+        let attributes = try FileManager.default.attributesOfItem(atPath: metadataURL.path)
+        XCTAssertEqual((attributes[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertEqual(try vault.code(for: entry.id, at: Date(timeIntervalSince1970: 59)), "287082")
+        XCTAssertEqual(secrets.readCount, 1)
+        XCTAssertThrowsError(try vault.add(issuer: "AWS", account: "admin", secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")) { error in
+            XCTAssertEqual(error as? TOTPError, .duplicateEntry)
+        }
+    }
+
+    func testVaultImportsOtpauthURI() throws {
+        let secrets = InMemorySecretStore()
+        let vault = TOTPVault(metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), secretStore: secrets)
+        let entry = try vault.add(otpauthURI: "otpauth://totp/AWS:admin%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=AWS")
+        XCTAssertEqual(entry.issuer, "AWS")
+        XCTAssertEqual(entry.account, "admin@example.com")
+    }
+
     func testRemainingPercentIsClamped() {
         XCTAssertEqual(QuotaWindow(usedPercent: 47, resetsAt: nil, windowName: "week").remainingPercent, 53)
         XCTAssertEqual(QuotaWindow(usedPercent: 120, resetsAt: nil, windowName: "week").remainingPercent, 0)
