@@ -35,7 +35,7 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 
 也可以从 [Releases](https://github.com/RegisonDonut/agent-hub-mac/releases/latest) 下载 Universal Binary 安装包。
 
-当前团队安装包采用 **ad-hoc 签名**，没有 Apple Developer ID，也未经过 Apple 公证。安装脚本会保留 macOS quarantine，且不会绕过 Gatekeeper；请只使用 `RegisonDonut/agent-hub-mac` 官方 Release 或上面的官方安装脚本。浏览器下载后如果首次打开被拦截，请按团队批准的流程在 Finder 中手动“打开”，不要执行移除 quarantine 属性的命令。
+当前团队安装包采用 **ad-hoc 签名**，没有 Apple Developer ID，也未经过 Apple 公证。安装脚本会确保 App 带有 macOS quarantine，且不会绕过 Gatekeeper；请只使用 `RegisonDonut/agent-hub-mac` 官方 Release 或上面的官方安装脚本。首次打开被拦截时，请按团队批准的流程在 Finder 中手动“打开”，不要执行移除 quarantine 属性的命令。
 
 ## 使用
 

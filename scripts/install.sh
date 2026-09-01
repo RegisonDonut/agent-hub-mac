@@ -11,7 +11,7 @@ command -v curl >/dev/null || { echo "需要 curl 才能下载安装包。" >&2;
 
 cat <<'EOF'
 安全说明：当前团队安装包使用 ad-hoc 签名，没有 Apple Developer ID，也未经过 Apple 公证。
-安装器会保留 macOS quarantine；只应从 RegisonDonut/agent-hub-mac 官方 Release 安装。
+安装器会确保 App 保留 macOS quarantine；只应从 RegisonDonut/agent-hub-mac 官方 Release 安装。
 如果 Gatekeeper 阻止首次打开，请按团队批准的方式在 Finder 中手动“打开”，不要移除 quarantine 属性。
 EOF
 
@@ -31,6 +31,8 @@ codesign --verify --deep --strict "$work_dir/unpacked/AgentHub.app"
 mkdir -p "$install_root"
 rm -rf "$install_root/AgentHub.app"
 cp -R "$work_dir/unpacked/AgentHub.app" "$install_root/AgentHub.app"
+quarantine_timestamp="$(printf '%x' "$(date +%s)")"
+xattr -w com.apple.quarantine "0081;${quarantine_timestamp};AgentHub Installer;" "$install_root/AgentHub.app"
 open "$install_root/AgentHub.app"
 
 mkdir -p "$HOME/.local/bin"

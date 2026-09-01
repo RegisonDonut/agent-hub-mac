@@ -34,10 +34,13 @@ public struct TOTPEntryMetadata: Codable, Equatable, Identifiable, Sendable {
 
     public static func makeID(issuer: String, account: String) -> String {
         let normalize: (String) -> String = { value in
-            value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                .replacingOccurrences(of: "[^a-z0-9._@-]+", with: "-", options: .regularExpression)
+            value.trimmingCharacters(in: .whitespacesAndNewlines)
+                .precomposedStringWithCanonicalMapping
+                .lowercased()
         }
-        return "totp:\(normalize(issuer)):\(normalize(account))"
+        let canonical = "\(normalize(issuer))\u{0}\(normalize(account))"
+        let digest = SHA256.hash(data: Data(canonical.utf8))
+        return "totp:" + digest.map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -263,12 +266,19 @@ public final class TOTPVault {
         }
         let label = String(components.path.dropFirst()).removingPercentEncoding ?? ""
         let parts = label.split(separator: ":", maxSplits: 1).map(String.init)
-        let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name.lowercased(), $0.value ?? "") })
+        var query: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            let key = item.name.lowercased()
+            guard query[key] == nil else { throw TOTPError.invalidURI("参数 \(key) 重复") }
+            query[key] = item.value ?? ""
+        }
         guard let secret = query["secret"], !secret.isEmpty else { throw TOTPError.invalidURI("缺少 secret") }
         let issuer = query["issuer"] ?? (parts.count > 1 ? parts[0] : "Authenticator")
         let account = parts.count > 1 ? parts[1] : (parts.first ?? "Agent")
-        let digits = Int(query["digits"] ?? "6") ?? 6
-        let period = Int(query["period"] ?? "30") ?? 30
+        let algorithm = query["algorithm"] ?? "SHA1"
+        guard algorithm.uppercased() == "SHA1" else { throw TOTPError.unsupportedAlgorithm(algorithm) }
+        let digits = try integerQueryValue(query, name: "digits", defaultValue: 6)
+        let period = try integerQueryValue(query, name: "period", defaultValue: 30)
         return try add(issuer: issuer, account: account, secret: secret, digits: digits, period: period)
     }
 
@@ -301,8 +311,16 @@ public final class TOTPVault {
     public func metadata(for id: String) -> TOTPEntryMetadata? { entries.first { $0.id == id } }
 
     public func metadata(issuer: String, account: String) -> TOTPEntryMetadata? {
-        let id = TOTPEntryMetadata.makeID(issuer: issuer, account: account)
-        return metadata(for: id)
+        entries.first {
+            $0.issuer.caseInsensitiveCompare(issuer) == .orderedSame
+                && $0.account.caseInsensitiveCompare(account) == .orderedSame
+        }
+    }
+
+    private func integerQueryValue(_ query: [String: String], name: String, defaultValue: Int) throws -> Int {
+        guard let raw = query[name] else { return defaultValue }
+        guard let value = Int(raw) else { throw TOTPError.invalidURI("\(name) 必须是整数") }
+        return value
     }
 
     private func persist() throws {

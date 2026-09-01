@@ -102,6 +102,7 @@ for app_arch, want_arches in arch_alias.items():
 
     manifest = None
     small = {}
+    config_sizes = {}
     # single streaming pass: keep manifest + every small blob (image configs)
     with gzip.open(archive, "rb") as gz:
         with tarfile.open(fileobj=gz, mode="r|") as tar:
@@ -110,8 +111,10 @@ for app_arch, want_arches in arch_alias.items():
                     continue
                 if member.name == "manifest.json":
                     manifest = json.loads(tar.extractfile(member).read())
-                elif member.size <= 65536:
-                    small[member.name] = tar.extractfile(member).read()
+                else:
+                    config_sizes[member.name] = member.size
+                    if member.size <= 65536:
+                        small[member.name] = tar.extractfile(member).read()
 
     if manifest is None:
         fail(f"{app_arch}: no manifest.json in archive")
@@ -119,9 +122,14 @@ for app_arch, want_arches in arch_alias.items():
         continue
 
     present = set()
+    tag_counts = {}
     for entry in manifest:
-        for tag in entry.get("RepoTags") or []:
+        tags = entry.get("RepoTags") or []
+        if not tags:
+            fail(f"{app_arch}: archive contains an untagged image entry")
+        for tag in tags:
             present.add(tag)
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
     missing = required - present
     extra = present - required
@@ -131,6 +139,9 @@ for app_arch, want_arches in arch_alias.items():
         ok(f"{app_arch}: all {len(required)} required images present")
     if extra:
         fail(f"{app_arch}: archive carries unused images {sorted(extra)}")
+    duplicated = sorted(tag for tag, count in tag_counts.items() if count != 1)
+    if duplicated:
+        fail(f"{app_arch}: image tags are not mapped exactly once: {duplicated}")
 
     # every image must be built for the architecture this archive targets
     arch_clean = True
@@ -138,7 +149,10 @@ for app_arch, want_arches in arch_alias.items():
         tags = entry.get("RepoTags") or ["<untagged>"]
         blob = small.get(entry["Config"])
         if blob is None:
-            notes.append(f"{app_arch}: config blob for {tags[0]} not inspected (too large)")
+            arch_clean = False
+            size = config_sizes.get(entry["Config"])
+            detail = "missing" if size is None else f"{size} bytes"
+            fail(f"{app_arch}: config blob missing or too large for {tags[0]} ({detail})")
             continue
         got = json.loads(blob).get("architecture")
         if got not in want_arches:

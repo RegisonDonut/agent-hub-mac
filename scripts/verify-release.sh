@@ -99,11 +99,13 @@ runtime_dir="$app_dir/Contents/Resources/BundledRuntime"
 
 codesign --verify --deep --strict "$app_dir"
 codesign --verify --strict "$totp_binary"
-signature_details="$(codesign -dv --verbose=4 "$app_dir" 2>&1)"
-[[ "$signature_details" == *"Signature=adhoc"* && "$signature_details" == *"TeamIdentifier=not set"* ]] || {
-  echo "Release signature does not match manifest requirement: expected ad-hoc with no TeamIdentifier" >&2
-  exit 1
-}
+for signed_target in "$app_dir" "$totp_binary"; do
+  signature_details="$(codesign -dv --verbose=4 "$signed_target" 2>&1)"
+  [[ "$signature_details" == *"Signature=adhoc"* && "$signature_details" == *"TeamIdentifier=not set"* ]] || {
+    echo "Release signature does not match manifest requirement for $signed_target: expected ad-hoc with no TeamIdentifier" >&2
+    exit 1
+  }
+done
 
 for binary in "$main_binary" "$totp_binary"; do
   test -x "$binary" || { echo "Missing executable: $binary" >&2; exit 1; }
