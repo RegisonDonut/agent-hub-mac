@@ -126,6 +126,8 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(packageScript.contains("verify-release.sh"))
         XCTAssertTrue(packageScript.contains("AgentHub-macOS.zip.sha256"))
         XCTAssertFalse(packageScript.contains("--sequesterRsrc"))
+        XCTAssertTrue(packageScript.contains("--norsrc"))
+        XCTAssertTrue(packageScript.contains("--noextattr"))
 
         let verifyScript = try String(contentsOf: root.appendingPathComponent("scripts/verify-release.sh"))
         XCTAssertTrue(verifyScript.contains("AgentHubRelease.json"))
@@ -138,6 +140,7 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(verifyScript.contains("import zipfile"))
         XCTAssertTrue(verifyScript.contains("fileInventory"))
         XCTAssertTrue(verifyScript.contains("signing"))
+        XCTAssertTrue(verifyScript.contains("AppleDouble sidecar"))
 
         let installScript = try String(contentsOf: root.appendingPathComponent("scripts/install.sh"))
         XCTAssertTrue(installScript.contains("AgentHub-macOS.zip.sha256"))
@@ -152,6 +155,7 @@ final class AgentHubTests: XCTestCase {
         let verifyBundleScript = try String(contentsOf: root.appendingPathComponent("scripts/verify-bundle.sh"))
         XCTAssertTrue(verifyBundleScript.contains("f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963"))
         XCTAssertTrue(verifyBundleScript.contains("c646bd178240bb50efd81c2f9919dd9124b126c815911f6c1b6db400786c5ccd"))
+        XCTAssertTrue(verifyBundleScript.contains("archive carries unused images"))
     }
 
     func testTOTPCycleCountdownUsesConfiguredPeriod() {

@@ -130,7 +130,7 @@ for app_arch, want_arches in arch_alias.items():
     else:
         ok(f"{app_arch}: all {len(required)} required images present")
     if extra:
-        notes.append(f"{app_arch}: archive also carries unused images {sorted(extra)}")
+        fail(f"{app_arch}: archive carries unused images {sorted(extra)}")
 
     # every image must be built for the architecture this archive targets
     arch_clean = True

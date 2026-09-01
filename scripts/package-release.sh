@@ -16,7 +16,7 @@ commit=$(git -C "$project_dir" rev-parse HEAD)
 "$project_dir/scripts/build-app.sh" release
 
 rm -f "$archive" "$checksum"
-ditto -c -k --keepParent "$app_dir" "$archive"
+ditto -c -k --norsrc --noextattr --noqtn --noacl --keepParent "$app_dir" "$archive"
 "$project_dir/scripts/verify-release.sh" "$archive" --expected-commit "$commit" --runtime-smoke
 
 (

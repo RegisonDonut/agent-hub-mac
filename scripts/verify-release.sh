@@ -67,6 +67,8 @@ with zipfile.ZipFile(archive) as bundle:
             raise SystemExit(f"unexpected top-level ZIP entry: {name}")
         if "__MACOSX" in parts:
             raise SystemExit(f"AppleDouble metadata is not allowed in release ZIP: {name}")
+        if any(part.startswith("._") for part in parts):
+            raise SystemExit(f"AppleDouble sidecar is not allowed in release ZIP: {name}")
         if normalized in seen or normalized.casefold() in seen_casefolded:
             raise SystemExit(f"duplicate ZIP path: {name}")
         seen.add(normalized)
