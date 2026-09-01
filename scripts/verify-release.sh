@@ -32,9 +32,10 @@ fi
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/agenthub-release-verify.XXXXXX")
 smoke_project="agenthub-release-smoke-$$"
 smoke_compose="$work_dir/docker-compose.yml"
+smoke_env="$work_dir/runtime.env"
 cleanup() {
-  if [[ -f "$smoke_compose" ]] && command -v docker >/dev/null 2>&1; then
-    docker compose --project-name "$smoke_project" --file "$smoke_compose" down -v --remove-orphans >/dev/null 2>&1 || true
+  if [[ -f "$smoke_compose" && -f "$smoke_env" ]] && command -v docker >/dev/null 2>&1; then
+    docker compose --project-name "$smoke_project" --env-file "$smoke_env" --file "$smoke_compose" down -v --remove-orphans >/dev/null 2>&1 || true
   fi
   rm -rf "$work_dir"
 }
@@ -87,6 +88,28 @@ expected_features = {
     "agenthub-totp-cli",
     "offline-sub2api-runtime",
 }
+expected_required_files = {
+    "Contents/MacOS/AgentHub",
+    "Contents/Helpers/agenthub-totp",
+    "Contents/Resources/BundledRuntime/VERSIONS.txt",
+    "Contents/Resources/BundledRuntime/docker-compose.yml",
+    "Contents/Resources/BundledRuntime/docker-images-arm64.tar.gz",
+    "Contents/Resources/BundledRuntime/docker-images-x86_64.tar.gz",
+    "Contents/Resources/BundledRuntime/arm64/codex",
+    "Contents/Resources/BundledRuntime/x86_64/codex",
+    "Contents/Resources/BundledRuntime/ThirdPartyLicenses/OpenAI-Codex-Apache-2.0.txt",
+    "Contents/Resources/BundledRuntime/ThirdPartyLicenses/PostgreSQL.txt",
+    "Contents/Resources/BundledRuntime/ThirdPartyLicenses/Redis.txt",
+    "Contents/Resources/BundledRuntime/ThirdPartyLicenses/Sub2API-LGPL-3.0.txt",
+}
+expected_hashed_files = {
+    "Contents/Resources/BundledRuntime/VERSIONS.txt",
+    "Contents/Resources/BundledRuntime/docker-compose.yml",
+    "Contents/Resources/BundledRuntime/docker-images-arm64.tar.gz",
+    "Contents/Resources/BundledRuntime/docker-images-x86_64.tar.gz",
+    "Contents/Resources/BundledRuntime/arm64/codex",
+    "Contents/Resources/BundledRuntime/x86_64/codex",
+}
 if manifest.get("schemaVersion") != 1:
     raise SystemExit("release manifest schemaVersion mismatch")
 if manifest.get("version") != info.get("CFBundleShortVersionString"):
@@ -95,6 +118,10 @@ if manifest.get("buildNumber") != info.get("CFBundleVersion"):
     raise SystemExit("release manifest build number mismatch")
 if set(manifest.get("features") or []) != expected_features:
     raise SystemExit("release manifest feature inventory mismatch")
+if set(manifest.get("requiredFiles") or []) != expected_required_files:
+    raise SystemExit("release manifest required file inventory mismatch")
+if set((manifest.get("sha256") or {}).keys()) != expected_hashed_files:
+    raise SystemExit("release manifest digest inventory mismatch")
 if manifest.get("sourceDirty"):
     raise SystemExit("release manifest was built from a dirty worktree")
 expected_commit = os.environ.get("EXPECTED_COMMIT")
@@ -145,80 +172,37 @@ s.close()
 PY
 )
   secret=$(openssl rand -hex 32)
-  cat > "$smoke_compose" <<EOF
-services:
-  postgres:
-    image: postgres:18-alpine
-    environment:
-      POSTGRES_USER: agenthub
-      POSTGRES_PASSWORD: $secret
-      POSTGRES_DB: agenthub
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U agenthub -d agenthub"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-  redis:
-    image: redis:8-alpine
-    command: ["redis-server", "--requirepass", "$secret"]
-    environment:
-      REDISCLI_AUTH: $secret
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
-  sub2api:
-    image: weishaw/sub2api:0.1.179
-    ports:
-      - "127.0.0.1:$port:8080"
-    environment:
-      AUTO_SETUP: "true"
-      SERVER_HOST: "0.0.0.0"
-      SERVER_PORT: "8080"
-      SERVER_MODE: "release"
-      RUN_MODE: "simple"
-      SIMPLE_MODE_CONFIRM: "true"
-      DATABASE_HOST: postgres
-      DATABASE_PORT: "5432"
-      DATABASE_USER: agenthub
-      DATABASE_PASSWORD: $secret
-      DATABASE_DBNAME: agenthub
-      DATABASE_SSLMODE: disable
-      REDIS_HOST: redis
-      REDIS_PORT: "6379"
-      REDIS_PASSWORD: $secret
-      REDIS_DB: "0"
-      ADMIN_EMAIL: admin@agenthub.local
-      ADMIN_PASSWORD: $secret
-      JWT_SECRET: $secret
-      JWT_EXPIRE_HOUR: "24"
-      TOTP_ENCRYPTION_KEY: $secret
-      TZ: UTC
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "wget", "-q", "-T", "5", "-O", "/dev/null", "http://localhost:8080/health"]
-      interval: 3s
-      timeout: 5s
-      retries: 40
+  cp "$runtime_dir/docker-compose.yml" "$smoke_compose"
+  cat > "$smoke_env" <<EOF
+SUB2API_VERSION=0.1.179
+SERVER_PORT=$port
+RUN_MODE=simple
+SIMPLE_MODE_CONFIRM=true
+POSTGRES_USER=agenthub
+POSTGRES_PASSWORD=$secret
+POSTGRES_DB=agenthub
+REDIS_PASSWORD=$secret
+ADMIN_EMAIL=admin@agenthub.local
+ADMIN_PASSWORD=$secret
+JWT_SECRET=$secret
+TOTP_ENCRYPTION_KEY=$secret
+TZ=UTC
+CONTAINER_PREFIX=$smoke_project
 EOF
-  if ! docker compose --project-name "$smoke_project" --file "$smoke_compose" up -d --pull never --wait --wait-timeout 180; then
+  docker compose --project-name "$smoke_project" --env-file "$smoke_env" --file "$smoke_compose" config >/dev/null
+  if ! docker compose --project-name "$smoke_project" --env-file "$smoke_env" --file "$smoke_compose" up -d --pull never --wait --wait-timeout 180; then
     echo "Bundled runtime failed to become healthy. Container status:" >&2
-    docker compose --project-name "$smoke_project" --file "$smoke_compose" ps >&2 || true
+    docker compose --project-name "$smoke_project" --env-file "$smoke_env" --file "$smoke_compose" ps >&2 || true
     echo "Bundled runtime logs (test secrets redacted):" >&2
-    docker compose --project-name "$smoke_project" --file "$smoke_compose" \
+    docker compose --project-name "$smoke_project" --env-file "$smoke_env" --file "$smoke_compose" \
       logs --no-color --tail 200 sub2api postgres redis 2>&1 \
       | sed "s/$secret/[REDACTED]/g" >&2 || true
     exit 1
   fi
   health_body=$(curl -fsS --retry 20 --retry-delay 2 --retry-all-errors "http://127.0.0.1:$port/health")
   [[ -n "$health_body" ]] || { echo "Sub2API health response is empty" >&2; exit 1; }
-  docker compose --project-name "$smoke_project" --file "$smoke_compose" ps
-  docker compose --project-name "$smoke_project" --file "$smoke_compose" down -v --remove-orphans >/dev/null
+  docker compose --project-name "$smoke_project" --env-file "$smoke_env" --file "$smoke_compose" ps
+  docker compose --project-name "$smoke_project" --env-file "$smoke_env" --file "$smoke_compose" down -v --remove-orphans >/dev/null
   [[ -z "$(docker ps -aq --filter "label=com.docker.compose.project=$smoke_project")" ]] || {
     echo "Runtime smoke containers were not cleaned up" >&2
     exit 1

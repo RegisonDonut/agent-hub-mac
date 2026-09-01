@@ -55,6 +55,7 @@ if [[ -n "$(git -C "$project_dir" status --porcelain)" ]]; then
 fi
 AGENTHUB_MANIFEST_PATH="$contents_dir/Resources/AgentHubRelease.json" \
 AGENTHUB_RUNTIME_DIR="$contents_dir/Resources/BundledRuntime" \
+AGENTHUB_SOURCE_FILE="$project_dir/Sources/QuotaBar/Sub2APIServiceManager.swift" \
 AGENTHUB_VERSION="$version" \
 AGENTHUB_BUILD_NUMBER="$build_number" \
 AGENTHUB_SOURCE_COMMIT="$source_commit" \
@@ -64,10 +65,18 @@ import datetime
 import hashlib
 import json
 import os
+import re
+import textwrap
 from pathlib import Path
 
 manifest_path = Path(os.environ["AGENTHUB_MANIFEST_PATH"])
 runtime_dir = Path(os.environ["AGENTHUB_RUNTIME_DIR"])
+source = Path(os.environ["AGENTHUB_SOURCE_FILE"]).read_text(encoding="utf-8")
+compose_match = re.search(r'static let composeFile = """(.*?)"""', source, re.S)
+if not compose_match:
+    raise SystemExit("could not extract Sub2API composeFile")
+compose = textwrap.dedent(compose_match.group(1)).strip("\n") + "\n"
+(runtime_dir / "docker-compose.yml").write_text(compose, encoding="utf-8")
 versions = {}
 for line in (runtime_dir / "VERSIONS.txt").read_text(encoding="utf-8").splitlines():
     if ":" in line:
@@ -77,6 +86,7 @@ for line in (runtime_dir / "VERSIONS.txt").read_text(encoding="utf-8").splitline
 hashed_files = {}
 for relative in (
     "VERSIONS.txt",
+    "docker-compose.yml",
     "docker-images-arm64.tar.gz",
     "docker-images-x86_64.tar.gz",
     "arm64/codex",
@@ -110,6 +120,7 @@ manifest = {
         "Contents/MacOS/AgentHub",
         "Contents/Helpers/agenthub-totp",
         "Contents/Resources/BundledRuntime/VERSIONS.txt",
+        "Contents/Resources/BundledRuntime/docker-compose.yml",
         "Contents/Resources/BundledRuntime/docker-images-arm64.tar.gz",
         "Contents/Resources/BundledRuntime/docker-images-x86_64.tar.gz",
         "Contents/Resources/BundledRuntime/arm64/codex",

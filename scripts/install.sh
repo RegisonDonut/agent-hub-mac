@@ -25,7 +25,6 @@ codesign --verify --deep --strict "$work_dir/unpacked/AgentHub.app"
 mkdir -p "$install_root"
 rm -rf "$install_root/AgentHub.app"
 cp -R "$work_dir/unpacked/AgentHub.app" "$install_root/AgentHub.app"
-xattr -dr com.apple.quarantine "$install_root/AgentHub.app" 2>/dev/null || true
 open "$install_root/AgentHub.app"
 
 mkdir -p "$HOME/.local/bin"

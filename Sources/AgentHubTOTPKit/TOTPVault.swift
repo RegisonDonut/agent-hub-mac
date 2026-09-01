@@ -147,15 +147,26 @@ public final class KeychainTOTPSecretStore: TOTPSecretStore {
     }
 
     public func save(secret: Data, for id: String) throws {
-        let query: [String: Any] = [
+        let query = try Self.makeSaveQuery(secret: secret, for: id, service: service)
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw TOTPError.keychain(status) }
+    }
+
+    static func makeSaveQuery(secret: Data, for id: String, service: String) throws -> [String: Any] {
+        guard let access = SecAccessControlCreateWithFlags(
+            nil,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            [.userPresence],
+            nil
+        ) else { throw TOTPError.keychain(errSecParam) }
+
+        return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: id,
-            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             kSecValueData as String: secret,
+            kSecAttrAccessControl as String: access,
         ]
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw TOTPError.keychain(status) }
     }
 
     public func readSecret(for id: String, reason: String) throws -> Data {
@@ -264,6 +275,7 @@ public final class TOTPVault {
     public func delete(id: String) throws {
         guard entries.contains(where: { $0.id == id }) else { throw TOTPError.entryNotFound }
         try secretStore.deleteSecret(for: id)
+        cachedSecrets.removeValue(forKey: id)
         entries.removeAll { $0.id == id }
         try persist()
     }

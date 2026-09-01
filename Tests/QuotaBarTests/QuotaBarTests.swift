@@ -132,11 +132,14 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(verifyScript.contains("--pull never"))
         XCTAssertTrue(verifyScript.contains("agenthub-totp"))
         XCTAssertTrue(verifyScript.contains("secret=$(openssl rand -hex 32)"))
+        XCTAssertTrue(verifyScript.contains("$runtime_dir/docker-compose.yml"))
+        XCTAssertFalse(verifyScript.contains("cat > \"$smoke_compose\""))
 
         let installScript = try String(contentsOf: root.appendingPathComponent("scripts/install.sh"))
         XCTAssertTrue(installScript.contains("AgentHub-macOS.zip.sha256"))
         XCTAssertTrue(installScript.contains("shasum -a 256 -c"))
         XCTAssertTrue(installScript.contains("codesign --verify --deep --strict"))
+        XCTAssertFalse(installScript.contains("xattr -dr com.apple.quarantine"))
     }
 
     func testTOTPCycleCountdownUsesConfiguredPeriod() {
@@ -169,6 +172,17 @@ final class AgentHubTests: XCTestCase {
         let store = KeychainTOTPSecretStore(service: service, authorizer: authorizer)
         XCTAssertEqual(try store.readSecret(for: account, reason: "read test"), value)
         XCTAssertEqual(authorizer.reasons, ["read test"])
+    }
+
+    func testKeychainStoreProtectsNewSecretsWithUserPresenceAccessControl() throws {
+        let query = try KeychainTOTPSecretStore.makeSaveQuery(
+            secret: Data("secret".utf8),
+            for: "entry",
+            service: "com.regisondonut.AgentHub.test"
+        )
+
+        XCTAssertNotNil(query[kSecAttrAccessControl as String])
+        XCTAssertNil(query[kSecAttrAccessible as String])
     }
 
     func testRFC6238TOTPVector() throws {
@@ -205,6 +219,27 @@ final class AgentHubTests: XCTestCase {
 
         vault.clearCachedSecrets()
         _ = try vault.code(for: entry.id, at: Date(timeIntervalSince1970: 60))
+        XCTAssertEqual(secrets.readCount, 2)
+    }
+
+    func testVaultDoesNotReuseDeletedSecretWhenEntryIsRecreated() throws {
+        let oldSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        let newSecret = "JBSWY3DPEHPK3PXP"
+        let date = Date(timeIntervalSince1970: 59)
+        let secrets = InMemorySecretStore()
+        let vault = TOTPVault(
+            metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            secretStore: secrets
+        )
+        let oldEntry = try vault.add(issuer: "AWS", account: "rotated", secret: oldSecret)
+        let oldCode = try vault.code(for: oldEntry.id, at: date)
+
+        try vault.delete(id: oldEntry.id)
+        let newEntry = try vault.add(issuer: "AWS", account: "rotated", secret: newSecret)
+        let newCode = try vault.code(for: newEntry.id, at: date)
+
+        XCTAssertNotEqual(newCode, oldCode)
+        XCTAssertEqual(newCode, try TOTPGenerator.code(secret: newSecret, at: date))
         XCTAssertEqual(secrets.readCount, 2)
     }
 
@@ -901,6 +936,7 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(compose.contains("127.0.0.1:${SERVER_PORT}:8080"))
         XCTAssertFalse(compose.contains("0.0.0.0:${SERVER_PORT}:8080"))
         XCTAssertTrue(compose.contains("RUN_MODE: \"${RUN_MODE}\""))
+        XCTAssertTrue(compose.contains("container_name: ${CONTAINER_PREFIX:-agenthub}-sub2api"))
         XCTAssertFalse(compose.contains("5432:5432"))
         XCTAssertFalse(compose.contains("6379:6379"))
         XCTAssertTrue(compose.contains("no-new-privileges:true"))

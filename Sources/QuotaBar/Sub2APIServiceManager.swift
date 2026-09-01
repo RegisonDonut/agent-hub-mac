@@ -1292,7 +1292,7 @@ final class Sub2APIServiceManager: ObservableObject {
     services:
       sub2api:
         image: weishaw/sub2api:${SUB2API_VERSION}
-        container_name: agenthub-sub2api
+        container_name: ${CONTAINER_PREFIX:-agenthub}-sub2api
         restart: unless-stopped
         security_opt:
           - no-new-privileges:true
@@ -1339,7 +1339,7 @@ final class Sub2APIServiceManager: ObservableObject {
 
       postgres:
         image: postgres:18-alpine
-        container_name: agenthub-sub2api-postgres
+        container_name: ${CONTAINER_PREFIX:-agenthub}-sub2api-postgres
         restart: unless-stopped
         environment:
           PGDATA: "/var/lib/postgresql/data"
@@ -1359,7 +1359,7 @@ final class Sub2APIServiceManager: ObservableObject {
 
       redis:
         image: redis:8-alpine
-        container_name: agenthub-sub2api-redis
+        container_name: ${CONTAINER_PREFIX:-agenthub}-sub2api-redis
         restart: unless-stopped
         command: ["redis-server", "--save", "60", "1", "--appendonly", "yes", "--appendfsync", "everysec", "--requirepass", "${REDIS_PASSWORD}"]
         environment:

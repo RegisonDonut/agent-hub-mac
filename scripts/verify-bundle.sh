@@ -42,7 +42,7 @@ test -f "$source_file" || { echo "missing $source_file" >&2; exit 1 }
 test -d "$runtime_dir" || { echo "missing $runtime_dir" >&2; exit 1 }
 
 SOURCE_FILE="$source_file" RUNTIME_DIR="$runtime_dir" LABEL="$label" python3 - <<'PY'
-import gzip, io, json, os, re, subprocess, sys, tarfile
+import gzip, io, json, os, re, subprocess, sys, tarfile, textwrap
 
 source_file = os.environ["SOURCE_FILE"]
 runtime_dir = os.environ["RUNTIME_DIR"]
@@ -71,6 +71,15 @@ if not compose:
     print("could not find composeFile in Sub2APIServiceManager.swift", file=sys.stderr)
     sys.exit(1)
 compose = compose.group(1)
+expected_compose = textwrap.dedent(compose).strip("\n") + "\n"
+bundled_compose_path = os.path.join(runtime_dir, "docker-compose.yml")
+if label.endswith(".app"):
+    if not os.path.exists(bundled_compose_path):
+        fail("bundled docker-compose.yml missing")
+    elif open(bundled_compose_path, encoding="utf-8").read() != expected_compose:
+        fail("bundled docker-compose.yml differs from Sub2APIServiceManager.composeFile")
+    else:
+        ok("bundled docker-compose.yml exactly matches the app source")
 
 required = set()
 for image in re.findall(r'^\s*image:\s*(\S+)\s*$', compose, re.M):
