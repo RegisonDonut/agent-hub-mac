@@ -2,20 +2,37 @@
 set -euo pipefail
 
 release_url="https://github.com/RegisonDonut/agent-hub-mac/releases/latest/download/AgentHub-macOS.zip"
+checksum_url="https://github.com/RegisonDonut/agent-hub-mac/releases/latest/download/AgentHub-macOS.zip.sha256"
 install_root="$HOME/Applications"
 work_dir=$(mktemp -d "${TMPDIR:-/tmp}/agent-hub-install.XXXXXX")
 trap 'rm -rf "$work_dir"' EXIT
 
 command -v curl >/dev/null || { echo "需要 curl 才能下载安装包。" >&2; exit 1; }
 
+cat <<'EOF'
+安全说明：当前团队安装包使用 ad-hoc 签名，没有 Apple Developer ID，也未经过 Apple 公证。
+安装器会确保 App 保留 macOS quarantine；只应从 RegisonDonut/agent-hub-mac 官方 Release 安装。
+如果 Gatekeeper 阻止首次打开，请按团队批准的方式在 Finder 中手动“打开”，不要移除 quarantine 属性。
+EOF
+
 curl --retry 3 --retry-all-errors --connect-timeout 15 -fL "$release_url" -o "$work_dir/AgentHub-macOS.zip"
+curl --retry 3 --retry-all-errors --connect-timeout 15 -fL "$checksum_url" -o "$work_dir/AgentHub-macOS.zip.sha256"
+(
+  cd "$work_dir"
+  shasum -a 256 -c AgentHub-macOS.zip.sha256
+)
 ditto -x -k "$work_dir/AgentHub-macOS.zip" "$work_dir/unpacked"
 test -d "$work_dir/unpacked/AgentHub.app" || { echo "安装包内缺少 AgentHub.app。" >&2; exit 1; }
+test -x "$work_dir/unpacked/AgentHub.app/Contents/MacOS/AgentHub" || { echo "安装包内缺少 AgentHub 主程序。" >&2; exit 1; }
+test -x "$work_dir/unpacked/AgentHub.app/Contents/Helpers/agenthub-totp" || { echo "安装包内缺少 agenthub-totp。" >&2; exit 1; }
+test -f "$work_dir/unpacked/AgentHub.app/Contents/Resources/AgentHubRelease.json" || { echo "安装包内缺少 release manifest。" >&2; exit 1; }
+codesign --verify --deep --strict "$work_dir/unpacked/AgentHub.app"
 
 mkdir -p "$install_root"
 rm -rf "$install_root/AgentHub.app"
 cp -R "$work_dir/unpacked/AgentHub.app" "$install_root/AgentHub.app"
-xattr -dr com.apple.quarantine "$install_root/AgentHub.app" 2>/dev/null || true
+quarantine_timestamp="$(printf '%x' "$(date +%s)")"
+xattr -w com.apple.quarantine "0081;${quarantine_timestamp};AgentHub Installer;" "$install_root/AgentHub.app"
 open "$install_root/AgentHub.app"
 
 mkdir -p "$HOME/.local/bin"

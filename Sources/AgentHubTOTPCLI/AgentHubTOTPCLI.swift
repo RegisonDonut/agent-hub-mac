@@ -15,7 +15,7 @@ struct AgentHubTOTPCLI {
                 }
             case "get":
                 guard arguments.count == 2, let entry = vault.metadata(for: arguments[1]) else { throw TOTPError.entryNotFound }
-                // The Keychain userPresence ACL triggers Touch ID or local password here.
+                // The vault performs LocalAuthentication before reading the Keychain item.
                 print(try vault.code(for: entry.id))
             case "get-by-label":
                 guard arguments.count == 3,

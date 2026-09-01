@@ -6,19 +6,45 @@ import Combine
 @MainActor
 final class TOTPStore: ObservableObject {
     @Published private(set) var entries: [TOTPEntryMetadata]
+    @Published private(set) var isUnlocked = false
     @Published var message: String?
     @Published var errorMessage: String?
     @Published private(set) var revealedCodes: [String: String] = [:]
 
     private let vault: TOTPVault
+    private let pageAuthorizer: SessionUserPresenceAuthorizer
 
-    init(vault: TOTPVault = TOTPVault()) {
-        self.vault = vault
-        self.entries = vault.entries
+    init(vault: TOTPVault? = nil, pageAuthorizer: SessionUserPresenceAuthorizer = SessionUserPresenceAuthorizer()) {
+        self.pageAuthorizer = pageAuthorizer
+        self.vault = vault ?? TOTPVault(secretStore: KeychainTOTPSecretStore(authorizer: pageAuthorizer))
+        self.entries = self.vault.entries
+    }
+
+    func enterPage() {
+        guard !isUnlocked else { return }
+        do {
+            try pageAuthorizer.unlock(reason: "AgentHub 需要打开验证码管理")
+            isUnlocked = true
+            refreshRevealedCodes(includeMissing: true)
+            message = "已通过系统授权打开验证码管理"
+            errorMessage = nil
+        } catch {
+            isUnlocked = false
+            errorMessage = error.localizedDescription
+            message = nil
+        }
+    }
+
+    func leavePage() {
+        pageAuthorizer.lock()
+        vault.clearCachedSecrets()
+        isUnlocked = false
+        revealedCodes.removeAll()
     }
 
     @discardableResult
     func add(issuer: String, account: String, secret: String) -> Bool {
+        guard isUnlocked else { errorMessage = "请先通过系统授权打开验证码管理"; return false }
         do {
             _ = try vault.add(issuer: issuer, account: account, secret: secret)
             entries = vault.entries
@@ -34,6 +60,7 @@ final class TOTPStore: ObservableObject {
 
     @discardableResult
     func add(uri: String) -> Bool {
+        guard isUnlocked else { errorMessage = "请先通过系统授权打开验证码管理"; return false }
         do {
             _ = try vault.add(otpauthURI: uri)
             entries = vault.entries
@@ -48,6 +75,7 @@ final class TOTPStore: ObservableObject {
     }
 
     func reveal(_ entry: TOTPEntryMetadata) {
+        guard isUnlocked else { errorMessage = "请先通过系统授权打开验证码管理"; return }
         do {
             let code = try vault.code(for: entry.id)
             revealedCodes[entry.id] = code
@@ -56,6 +84,20 @@ final class TOTPStore: ObservableObject {
         } catch {
             errorMessage = error.localizedDescription
             message = nil
+        }
+    }
+
+    func refreshRevealedCodes(at date: Date = Date(), includeMissing: Bool = false) {
+        guard isUnlocked else { return }
+        for entry in entries {
+            // A failed initial read must not retry every second and spam
+            // Keychain authorization dialogs. Explicit copy/reveal retries.
+            guard includeMissing || revealedCodes[entry.id] != nil else { continue }
+            do {
+                revealedCodes[entry.id] = try vault.code(for: entry.id, at: date)
+            } catch {
+                revealedCodes.removeValue(forKey: entry.id)
+            }
         }
     }
 
@@ -68,6 +110,7 @@ final class TOTPStore: ObservableObject {
     }
 
     func delete(_ entry: TOTPEntryMetadata) {
+        guard isUnlocked else { errorMessage = "请先通过系统授权打开验证码管理"; return }
         do {
             try vault.delete(id: entry.id)
             entries = vault.entries

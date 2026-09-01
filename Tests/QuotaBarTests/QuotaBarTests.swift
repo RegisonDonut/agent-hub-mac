@@ -1,6 +1,7 @@
 import XCTest
 import AppKit
 import Security
+import LocalAuthentication
 @testable import AgentHub
 @testable import AgentHubTOTPKit
 
@@ -26,7 +27,148 @@ private final class RecordingUserPresenceAuthorizer: UserPresenceAuthorizer {
     }
 }
 
+private final class ContextRecordingAuthorizer: UserPresenceAuthorizer, AuthenticationContextProviding {
+    let context = LAContext()
+    var authenticationContext: LAContext? { context }
+
+    func authorize(reason: String) throws {}
+}
+
 final class AgentHubTests: XCTestCase {
+    func testTOTPDeleteConfirmationRequiresExactPhrase() {
+        XCTAssertFalse(TOTPDeleteConfirmation.isValid(input: ""))
+        XCTAssertFalse(TOTPDeleteConfirmation.isValid(input: "删除"))
+        XCTAssertFalse(TOTPDeleteConfirmation.isValid(input: "确认删除 "))
+        XCTAssertTrue(TOTPDeleteConfirmation.isValid(input: "确认删除"))
+    }
+
+    func testTOTPManagerDoesNotRenderRedundantReadButton() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/QuotaBar/TOTPManagerView.swift")
+        let source = try String(contentsOf: sourceURL)
+        XCTAssertFalse(source.contains("Label(\"读取\""))
+    }
+
+    func testTOTPManagerReactivatesAgentHubAfterPageUnlock() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/QuotaBar/TOTPManagerView.swift")
+        let source = try String(contentsOf: sourceURL)
+        XCTAssertTrue(source.contains("onChange(of: store.isUnlocked)"))
+        XCTAssertTrue(source.contains("NSApp.activate(ignoringOtherApps: true)"))
+        XCTAssertTrue(source.contains("makeKeyAndOrderFront(nil)"))
+    }
+
+    func testTOTPManagerCollapsesAddSectionAfterSuccessfulSave() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/QuotaBar/TOTPManagerView.swift")
+        let source = try String(contentsOf: sourceURL)
+        XCTAssertTrue(source.contains("@State private var isAddSectionExpanded = false"))
+        XCTAssertTrue(source.contains("if isAddSectionExpanded"))
+        XCTAssertTrue(source.contains("isAddSectionExpanded = false"))
+        XCTAssertTrue(source.contains("Label(isAddSectionExpanded ? \"收起添加\" : \"添加\""))
+    }
+
+    func testTOTPPageDoesNotLockWhenViewDisappears() throws {
+        let viewURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/QuotaBar/TOTPManagerView.swift")
+        let appURL = viewURL.deletingLastPathComponent().appendingPathComponent("QuotaBarApp.swift")
+        let viewSource = try String(contentsOf: viewURL)
+        let appSource = try String(contentsOf: appURL)
+        XCTAssertFalse(viewSource.contains(".onDisappear { store.leavePage() }"))
+        XCTAssertTrue(appSource.contains("applicationWillTerminate"))
+        XCTAssertTrue(appSource.contains("totpStore.leavePage()"))
+    }
+
+    func testPagePresenceAuthorizationIsCachedUntilLocked() throws {
+        let underlying = RecordingUserPresenceAuthorizer()
+        let session = SessionUserPresenceAuthorizer(underlying: underlying)
+
+        try session.unlock(reason: "open page")
+        try session.authorize(reason: "read one")
+        try session.authorize(reason: "copy one")
+        XCTAssertEqual(underlying.reasons, ["open page"])
+
+        session.lock()
+        try session.authorize(reason: "reopen page")
+        XCTAssertEqual(underlying.reasons, ["open page", "reopen page"])
+    }
+
+    func testSessionAuthorizerExposesAuthenticatedContextForKeychainReads() throws {
+        let underlying = ContextRecordingAuthorizer()
+        let session = SessionUserPresenceAuthorizer(underlying: underlying)
+
+        try session.unlock(reason: "open page")
+
+        XCTAssertTrue(session.authenticationContext === underlying.context)
+    }
+
+    func testReleasePackagingRequiresVerifiedCompleteBundle() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let info = NSDictionary(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
+        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.11.0")
+
+        let packageScript = try String(contentsOf: root.appendingPathComponent("scripts/package-release.sh"))
+        XCTAssertTrue(packageScript.contains("verify-release.sh"))
+        XCTAssertTrue(packageScript.contains("AgentHub-macOS.zip.sha256"))
+        XCTAssertFalse(packageScript.contains("--sequesterRsrc"))
+        XCTAssertTrue(packageScript.contains("--norsrc"))
+        XCTAssertTrue(packageScript.contains("--noextattr"))
+
+        let verifyScript = try String(contentsOf: root.appendingPathComponent("scripts/verify-release.sh"))
+        XCTAssertTrue(verifyScript.contains("AgentHubRelease.json"))
+        XCTAssertTrue(verifyScript.contains("--runtime-smoke"))
+        XCTAssertTrue(verifyScript.contains("--pull never"))
+        XCTAssertTrue(verifyScript.contains("agenthub-totp"))
+        XCTAssertTrue(verifyScript.contains("secret=$(openssl rand -hex 32)"))
+        XCTAssertTrue(verifyScript.contains("$runtime_dir/docker-compose.yml"))
+        XCTAssertFalse(verifyScript.contains("cat > \"$smoke_compose\""))
+        XCTAssertTrue(verifyScript.contains("import zipfile"))
+        XCTAssertTrue(verifyScript.contains("fileInventory"))
+        XCTAssertTrue(verifyScript.contains("signing"))
+        XCTAssertTrue(verifyScript.contains("AppleDouble sidecar"))
+
+        let installScript = try String(contentsOf: root.appendingPathComponent("scripts/install.sh"))
+        XCTAssertTrue(installScript.contains("AgentHub-macOS.zip.sha256"))
+        XCTAssertTrue(installScript.contains("shasum -a 256 -c"))
+        XCTAssertTrue(installScript.contains("codesign --verify --deep --strict"))
+        XCTAssertFalse(installScript.contains("xattr -dr com.apple.quarantine"))
+        XCTAssertTrue(installScript.contains("ad-hoc"))
+        XCTAssertTrue(installScript.contains("xattr -w com.apple.quarantine"))
+
+        let readme = try String(contentsOf: root.appendingPathComponent("README.md"))
+        XCTAssertTrue(readme.contains("ad-hoc"))
+
+        let verifyBundleScript = try String(contentsOf: root.appendingPathComponent("scripts/verify-bundle.sh"))
+        XCTAssertTrue(verifyBundleScript.contains("f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963"))
+        XCTAssertTrue(verifyBundleScript.contains("c646bd178240bb50efd81c2f9919dd9124b126c815911f6c1b6db400786c5ccd"))
+        XCTAssertTrue(verifyBundleScript.contains("archive carries unused images"))
+        XCTAssertTrue(verifyBundleScript.contains("untagged image entry"))
+        XCTAssertTrue(verifyBundleScript.contains("config blob missing or too large"))
+        XCTAssertTrue(verifyScript.contains("for signed_target in"))
+    }
+
+    func testTOTPCycleCountdownUsesConfiguredPeriod() {
+        XCTAssertEqual(TOTPCountdown.remainingSeconds(at: Date(timeIntervalSince1970: 59), period: 30), 1)
+        XCTAssertEqual(TOTPCountdown.remainingSeconds(at: Date(timeIntervalSince1970: 60), period: 30), 30)
+        XCTAssertEqual(TOTPCountdown.remainingSeconds(at: Date(timeIntervalSince1970: 89), period: 30), 1)
+        XCTAssertEqual(TOTPCountdown.remainingSeconds(at: Date(timeIntervalSince1970: 89), period: 60), 31)
+    }
+
     func testKeychainStoreAuthorizesBeforeReadingUnrestrictedItem() throws {
         let service = "com.regisondonut.AgentHub.test.\(UUID().uuidString)"
         let account = "entry"
@@ -52,6 +194,17 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(authorizer.reasons, ["read test"])
     }
 
+    func testKeychainStoreProtectsNewSecretsWithUserPresenceAccessControl() throws {
+        let query = try KeychainTOTPSecretStore.makeSaveQuery(
+            secret: Data("secret".utf8),
+            for: "entry",
+            service: "com.regisondonut.AgentHub.test"
+        )
+
+        XCTAssertNotNil(query[kSecAttrAccessControl as String])
+        XCTAssertNil(query[kSecAttrAccessible as String])
+    }
+
     func testRFC6238TOTPVector() throws {
         let secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
         XCTAssertEqual(try TOTPGenerator.code(secret: secret, at: Date(timeIntervalSince1970: 59), digits: 8), "94287082")
@@ -75,12 +228,100 @@ final class AgentHubTests: XCTestCase {
         }
     }
 
+    func testVaultCachesSecretForUnlockedSessionAndClearsItOnLock() throws {
+        let secrets = InMemorySecretStore()
+        let vault = TOTPVault(metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), secretStore: secrets)
+        let entry = try vault.add(issuer: "AWS", account: "cached", secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+
+        _ = try vault.code(for: entry.id, at: Date(timeIntervalSince1970: 59))
+        _ = try vault.code(for: entry.id, at: Date(timeIntervalSince1970: 60))
+        XCTAssertEqual(secrets.readCount, 1)
+
+        vault.clearCachedSecrets()
+        _ = try vault.code(for: entry.id, at: Date(timeIntervalSince1970: 60))
+        XCTAssertEqual(secrets.readCount, 2)
+    }
+
+    func testVaultDoesNotReuseDeletedSecretWhenEntryIsRecreated() throws {
+        let oldSecret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"
+        let newSecret = "JBSWY3DPEHPK3PXP"
+        let date = Date(timeIntervalSince1970: 59)
+        let secrets = InMemorySecretStore()
+        let vault = TOTPVault(
+            metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            secretStore: secrets
+        )
+        let oldEntry = try vault.add(issuer: "AWS", account: "rotated", secret: oldSecret)
+        let oldCode = try vault.code(for: oldEntry.id, at: date)
+
+        try vault.delete(id: oldEntry.id)
+        let newEntry = try vault.add(issuer: "AWS", account: "rotated", secret: newSecret)
+        let newCode = try vault.code(for: newEntry.id, at: date)
+
+        XCTAssertNotEqual(newCode, oldCode)
+        XCTAssertEqual(newCode, try TOTPGenerator.code(secret: newSecret, at: date))
+        XCTAssertEqual(secrets.readCount, 2)
+    }
+
     func testVaultImportsOtpauthURI() throws {
         let secrets = InMemorySecretStore()
         let vault = TOTPVault(metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString), secretStore: secrets)
         let entry = try vault.add(otpauthURI: "otpauth://totp/AWS:admin%40example.com?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&issuer=AWS")
         XCTAssertEqual(entry.issuer, "AWS")
         XCTAssertEqual(entry.account, "admin@example.com")
+    }
+
+    func testVaultRejectsDuplicateOtpauthQueryKeysWithoutCrashing() throws {
+        let vault = TOTPVault(
+            metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            secretStore: InMemorySecretStore()
+        )
+
+        XCTAssertThrowsError(try vault.add(
+            otpauthURI: "otpauth://totp/AWS:admin?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&secret=JBSWY3DPEHPK3PXP&issuer=AWS"
+        )) { error in
+            XCTAssertEqual(error as? TOTPError, .invalidURI("参数 secret 重复"))
+        }
+    }
+
+    func testVaultRejectsUnsupportedOtpauthAlgorithm() throws {
+        let vault = TOTPVault(
+            metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            secretStore: InMemorySecretStore()
+        )
+
+        XCTAssertThrowsError(try vault.add(
+            otpauthURI: "otpauth://totp/AWS:admin?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&algorithm=SHA256"
+        )) { error in
+            XCTAssertEqual(error as? TOTPError, .unsupportedAlgorithm("SHA256"))
+        }
+    }
+
+    func testVaultRejectsMalformedOtpauthNumericParameters() throws {
+        let vault = TOTPVault(
+            metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            secretStore: InMemorySecretStore()
+        )
+
+        XCTAssertThrowsError(try vault.add(
+            otpauthURI: "otpauth://totp/AWS:admin?secret=GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ&digits=six"
+        )) { error in
+            XCTAssertEqual(error as? TOTPError, .invalidURI("digits 必须是整数"))
+        }
+    }
+
+    func testVaultUsesCollisionResistantIDsForUnicodeLabels() throws {
+        let secrets = InMemorySecretStore()
+        let vault = TOTPVault(
+            metadataURL: FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString),
+            secretStore: secrets
+        )
+
+        let first = try vault.add(issuer: "微信", account: "foo", secret: "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ")
+        let second = try vault.add(issuer: "微软", account: "foo", secret: "JBSWY3DPEHPK3PXP")
+
+        XCTAssertNotEqual(first.id, second.id)
+        XCTAssertEqual(secrets.values.count, 2)
     }
 
     func testRemainingPercentIsClamped() {
@@ -696,8 +937,146 @@ final class AgentHubTests: XCTestCase {
     }
 
     @MainActor
-    func testWorkDashboardRefreshesHourly() {
-        XCTAssertEqual(WorkDurationStore.refreshInterval, 3_600)
+    func testWorkDashboardRefreshesEveryMinute() {
+        XCTAssertEqual(WorkDurationStore.refreshInterval, 60)
+    }
+
+    func testSessionHistoryParserKeepsCompletedAndActiveTurns() throws {
+        let now = Date(timeIntervalSince1970: 160)
+        let data = Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":100}}
+        {"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","started_at":100,"completed_at":130,"duration_ms":30000}}
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-2","started_at":140}}
+        """.utf8)
+
+        let intervals = try SessionHistoryParser.parse(data: data, threadID: "thread-1", now: now)
+        XCTAssertEqual(intervals, [
+            WorkInterval(
+                threadID: "thread-1",
+                start: Date(timeIntervalSince1970: 100),
+                end: Date(timeIntervalSince1970: 130)
+            ),
+            WorkInterval(
+                threadID: "thread-1",
+                start: Date(timeIntervalSince1970: 140),
+                end: now
+            )
+        ])
+    }
+
+    func testWorkHistoryUsesBackgroundIncrementalFileReads() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/QuotaBar/WorkDurationStore.swift")
+        let source = try String(contentsOf: sourceURL)
+
+        XCTAssertTrue(source.contains("Task.detached(priority: .utility)"))
+        XCTAssertTrue(source.contains("FileHandle(forReadingFrom:"))
+        XCTAssertFalse(source.contains("Data(contentsOf: url)"))
+    }
+
+    func testRecentSessionLoaderReadsAppendsAndRebuildsAfterTruncation() throws {
+        let fileManager = FileManager.default
+        let homeDirectory = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fileManager.removeItem(at: homeDirectory) }
+
+        let now = Date()
+        let components = Calendar.autoupdatingCurrent.dateComponents([.year, .month, .day], from: now)
+        let sessionDirectory = homeDirectory
+            .appendingPathComponent(".codex/sessions", isDirectory: true)
+            .appendingPathComponent(String(format: "%04d", try XCTUnwrap(components.year)), isDirectory: true)
+            .appendingPathComponent(String(format: "%02d", try XCTUnwrap(components.month)), isDirectory: true)
+            .appendingPathComponent(String(format: "%02d", try XCTUnwrap(components.day)), isDirectory: true)
+        try fileManager.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let sessionURL = sessionDirectory.appendingPathComponent("thread.jsonl")
+
+        let partialStart = Data(#"{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":100}}"#.utf8)
+        try partialStart.write(to: sessionURL)
+        let first = try WorkDurationStore.loadRecentSessionIntervals(
+            homeDirectory: homeDirectory,
+            now: now,
+            cache: [:]
+        )
+        XCTAssertTrue(first.intervals.isEmpty, "An incomplete JSONL line must remain buffered")
+
+        let completion = Data("\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"turn-1\",\"completed_at\":130}}\n".utf8)
+        let appendHandle = try FileHandle(forWritingTo: sessionURL)
+        try appendHandle.seekToEnd()
+        try appendHandle.write(contentsOf: completion)
+        try appendHandle.close()
+
+        let second = try WorkDurationStore.loadRecentSessionIntervals(
+            homeDirectory: homeDirectory,
+            now: now,
+            cache: first.cache
+        )
+        XCTAssertEqual(second.intervals, [
+            WorkInterval(
+                threadID: "thread",
+                start: Date(timeIntervalSince1970: 100),
+                end: Date(timeIntervalSince1970: 130)
+            )
+        ])
+
+        let replacement = Data("{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"x\",\"started_at\":200}}\n{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_complete\",\"turn_id\":\"x\",\"completed_at\":220}}\n".utf8)
+        XCTAssertLessThan(replacement.count, partialStart.count + completion.count)
+        try replacement.write(to: sessionURL)
+
+        let third = try WorkDurationStore.loadRecentSessionIntervals(
+            homeDirectory: homeDirectory,
+            now: now,
+            cache: second.cache
+        )
+        XCTAssertEqual(third.intervals, [
+            WorkInterval(
+                threadID: "thread",
+                start: Date(timeIntervalSince1970: 200),
+                end: Date(timeIntervalSince1970: 220)
+            )
+        ])
+    }
+
+    func testIncrementalFileReadStopsAtCapturedSnapshotSize() throws {
+        let fileManager = FileManager.default
+        let url = fileManager.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fileManager.removeItem(at: url) }
+        let started = Data("""
+        {"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1","started_at":100}}
+
+        """.utf8)
+        let completed = Data("""
+        {"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","completed_at":130}}
+
+        """.utf8)
+        var contents = started
+        contents.append(completed)
+        try contents.write(to: url)
+
+        var accumulator = SessionHistoryAccumulator()
+        let firstOffset = try accumulator.appendFileBytes(
+            from: url,
+            offset: 0,
+            through: UInt64(started.count)
+        )
+        XCTAssertEqual(firstOffset, UInt64(started.count))
+        XCTAssertEqual(accumulator.turns, [
+            SessionHistoryTurn(start: Date(timeIntervalSince1970: 100), end: nil)
+        ])
+
+        let finalOffset = try accumulator.appendFileBytes(
+            from: url,
+            offset: firstOffset,
+            through: UInt64(contents.count)
+        )
+        XCTAssertEqual(finalOffset, UInt64(contents.count))
+        XCTAssertEqual(accumulator.turns, [
+            SessionHistoryTurn(
+                start: Date(timeIntervalSince1970: 100),
+                end: Date(timeIntervalSince1970: 130)
+            )
+        ])
     }
 
     @MainActor
@@ -713,6 +1092,20 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(store.snapshot.calendarDays.count, 371)
         XCTAssertGreaterThan(store.snapshot.last24Hours, 0)
         XCTAssertGreaterThanOrEqual(store.snapshot.last7Days, store.snapshot.last24Hours)
+        let today = Calendar.autoupdatingCurrent.startOfDay(for: Date())
+        XCTAssertGreaterThan(
+            store.snapshot.calendarDays.first(where: { $0.date == today })?.duration ?? 0,
+            0,
+            "Today's session JSONL should be included even while the SQLite history projection is stale"
+        )
+
+        let incrementalStartedAt = Date()
+        await store.refresh()
+        XCTAssertLessThan(
+            Date().timeIntervalSince(incrementalStartedAt),
+            2,
+            "A cached refresh should only parse bytes appended since the previous scan"
+        )
     }
 
     private func shanghaiCalendar() throws -> Calendar {
@@ -739,6 +1132,7 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(compose.contains("127.0.0.1:${SERVER_PORT}:8080"))
         XCTAssertFalse(compose.contains("0.0.0.0:${SERVER_PORT}:8080"))
         XCTAssertTrue(compose.contains("RUN_MODE: \"${RUN_MODE}\""))
+        XCTAssertTrue(compose.contains("container_name: ${CONTAINER_PREFIX:-agenthub}-sub2api"))
         XCTAssertFalse(compose.contains("5432:5432"))
         XCTAssertFalse(compose.contains("6379:6379"))
         XCTAssertTrue(compose.contains("no-new-privileges:true"))

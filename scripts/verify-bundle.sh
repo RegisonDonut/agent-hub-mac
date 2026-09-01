@@ -42,7 +42,7 @@ test -f "$source_file" || { echo "missing $source_file" >&2; exit 1 }
 test -d "$runtime_dir" || { echo "missing $runtime_dir" >&2; exit 1 }
 
 SOURCE_FILE="$source_file" RUNTIME_DIR="$runtime_dir" LABEL="$label" python3 - <<'PY'
-import gzip, io, json, os, re, subprocess, sys, tarfile
+import gzip, hashlib, io, json, os, re, subprocess, sys, tarfile, textwrap
 
 source_file = os.environ["SOURCE_FILE"]
 runtime_dir = os.environ["RUNTIME_DIR"]
@@ -71,6 +71,15 @@ if not compose:
     print("could not find composeFile in Sub2APIServiceManager.swift", file=sys.stderr)
     sys.exit(1)
 compose = compose.group(1)
+expected_compose = textwrap.dedent(compose).strip("\n") + "\n"
+bundled_compose_path = os.path.join(runtime_dir, "docker-compose.yml")
+if label.endswith(".app"):
+    if not os.path.exists(bundled_compose_path):
+        fail("bundled docker-compose.yml missing")
+    elif open(bundled_compose_path, encoding="utf-8").read() != expected_compose:
+        fail("bundled docker-compose.yml differs from Sub2APIServiceManager.composeFile")
+    else:
+        ok("bundled docker-compose.yml exactly matches the app source")
 
 required = set()
 for image in re.findall(r'^\s*image:\s*(\S+)\s*$', compose, re.M):
@@ -93,6 +102,7 @@ for app_arch, want_arches in arch_alias.items():
 
     manifest = None
     small = {}
+    config_sizes = {}
     # single streaming pass: keep manifest + every small blob (image configs)
     with gzip.open(archive, "rb") as gz:
         with tarfile.open(fileobj=gz, mode="r|") as tar:
@@ -101,8 +111,10 @@ for app_arch, want_arches in arch_alias.items():
                     continue
                 if member.name == "manifest.json":
                     manifest = json.loads(tar.extractfile(member).read())
-                elif member.size <= 65536:
-                    small[member.name] = tar.extractfile(member).read()
+                else:
+                    config_sizes[member.name] = member.size
+                    if member.size <= 65536:
+                        small[member.name] = tar.extractfile(member).read()
 
     if manifest is None:
         fail(f"{app_arch}: no manifest.json in archive")
@@ -110,9 +122,14 @@ for app_arch, want_arches in arch_alias.items():
         continue
 
     present = set()
+    tag_counts = {}
     for entry in manifest:
-        for tag in entry.get("RepoTags") or []:
+        tags = entry.get("RepoTags") or []
+        if not tags:
+            fail(f"{app_arch}: archive contains an untagged image entry")
+        for tag in tags:
             present.add(tag)
+            tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
     missing = required - present
     extra = present - required
@@ -121,7 +138,10 @@ for app_arch, want_arches in arch_alias.items():
     else:
         ok(f"{app_arch}: all {len(required)} required images present")
     if extra:
-        notes.append(f"{app_arch}: archive also carries unused images {sorted(extra)}")
+        fail(f"{app_arch}: archive carries unused images {sorted(extra)}")
+    duplicated = sorted(tag for tag, count in tag_counts.items() if count != 1)
+    if duplicated:
+        fail(f"{app_arch}: image tags are not mapped exactly once: {duplicated}")
 
     # every image must be built for the architecture this archive targets
     arch_clean = True
@@ -129,7 +149,10 @@ for app_arch, want_arches in arch_alias.items():
         tags = entry.get("RepoTags") or ["<untagged>"]
         blob = small.get(entry["Config"])
         if blob is None:
-            notes.append(f"{app_arch}: config blob for {tags[0]} not inspected (too large)")
+            arch_clean = False
+            size = config_sizes.get(entry["Config"])
+            detail = "missing" if size is None else f"{size} bytes"
+            fail(f"{app_arch}: config blob missing or too large for {tags[0]} ({detail})")
             continue
         got = json.loads(blob).get("architecture")
         if got not in want_arches:
@@ -141,6 +164,10 @@ for app_arch, want_arches in arch_alias.items():
 
 # ---- 3. codex binaries --------------------------------------------------
 print("[codex]")
+expected_codex_sha256 = {
+    "arm64": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
+    "x86_64": "c646bd178240bb50efd81c2f9919dd9124b126c815911f6c1b6db400786c5ccd",
+}
 for app_arch, want in (("arm64", "arm64"), ("x86_64", "x86_64")):
     binary = os.path.join(runtime_dir, app_arch, "codex")
     if not os.path.exists(binary):
@@ -154,6 +181,14 @@ for app_arch, want in (("arm64", "arm64"), ("x86_64", "x86_64")):
         fail(f"codex/{app_arch}: binary is {archs}, expected {want}")
     else:
         ok(f"codex/{app_arch}: {' '.join(archs)}")
+    digest = hashlib.sha256()
+    with open(binary, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected_codex_sha256[app_arch]:
+        fail(f"codex/{app_arch}: SHA-256 does not match the pinned Codex 0.149.0 binary")
+    else:
+        ok(f"codex/{app_arch}: pinned Codex 0.149.0 SHA-256")
 print()
 
 # ---- 4. VERSIONS.txt must describe what is really shipped ---------------
@@ -169,6 +204,7 @@ else:
             k, _, v = line.partition(":")
             claimed[k.strip()] = v.strip()
     expect = {}
+    expect["OpenAI Codex CLI"] = "0.149.0"
     for image in required:
         repo, _, tag = image.rpartition(":")
         if repo == "postgres":

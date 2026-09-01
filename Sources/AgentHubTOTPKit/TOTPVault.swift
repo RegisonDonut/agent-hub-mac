@@ -34,10 +34,13 @@ public struct TOTPEntryMetadata: Codable, Equatable, Identifiable, Sendable {
 
     public static func makeID(issuer: String, account: String) -> String {
         let normalize: (String) -> String = { value in
-            value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-                .replacingOccurrences(of: "[^a-z0-9._@-]+", with: "-", options: .regularExpression)
+            value.trimmingCharacters(in: .whitespacesAndNewlines)
+                .precomposedStringWithCanonicalMapping
+                .lowercased()
         }
-        return "totp:\(normalize(issuer)):\(normalize(account))"
+        let canonical = "\(normalize(issuer))\u{0}\(normalize(account))"
+        let digest = SHA256.hash(data: Data(canonical.utf8))
+        return "totp:" + digest.map { String(format: "%02x", $0) }.joined()
     }
 }
 
@@ -71,14 +74,88 @@ public protocol TOTPSecretStore: AnyObject {
     func deleteSecret(for id: String) throws
 }
 
+public protocol UserPresenceAuthorizer: AnyObject {
+    func authorize(reason: String) throws
+}
+
+public protocol AuthenticationContextProviding: AnyObject {
+    var authenticationContext: LAContext? { get }
+}
+
+public final class LocalUserPresenceAuthorizer: UserPresenceAuthorizer, AuthenticationContextProviding {
+    public private(set) var authenticationContext: LAContext?
+
+    public init() {}
+
+    public func authorize(reason: String) throws {
+        let context = LAContext()
+        var authorized = false
+        var authorizationError: Error?
+        let semaphore = DispatchSemaphore(value: 0)
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, error in
+            authorized = success
+            authorizationError = error
+            semaphore.signal()
+        }
+        semaphore.wait()
+        guard authorized else {
+            authenticationContext = nil
+            if let laError = authorizationError as? LAError, laError.code == .userCancel {
+                throw TOTPError.keychain(errSecUserCanceled)
+            }
+            throw TOTPError.keychain(errSecAuthFailed)
+        }
+        authenticationContext = context
+    }
+}
+
+public final class SessionUserPresenceAuthorizer: UserPresenceAuthorizer, AuthenticationContextProviding {
+    private let underlying: UserPresenceAuthorizer
+    private var isUnlocked = false
+
+    public var authenticationContext: LAContext? {
+        (underlying as? AuthenticationContextProviding)?.authenticationContext
+    }
+
+    public init(underlying: UserPresenceAuthorizer = LocalUserPresenceAuthorizer()) {
+        self.underlying = underlying
+    }
+
+    public func unlock(reason: String) throws {
+        try underlying.authorize(reason: reason)
+        isUnlocked = true
+    }
+
+    public func authorize(reason: String) throws {
+        if !isUnlocked {
+            try unlock(reason: reason)
+        }
+    }
+
+    public func lock() {
+        isUnlocked = false
+    }
+}
+
 public final class KeychainTOTPSecretStore: TOTPSecretStore {
     private let service: String
+    private let authorizer: UserPresenceAuthorizer
 
-    public init(service: String = "com.regisondonut.AgentHub.totp") {
+    public init(
+        service: String = "com.regisondonut.AgentHub.totp",
+        authorizer: UserPresenceAuthorizer = LocalUserPresenceAuthorizer()
+    ) {
         self.service = service
+        self.authorizer = authorizer
     }
 
     public func save(secret: Data, for id: String) throws {
+        let query = try Self.makeSaveQuery(secret: secret, for: id, service: service)
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else { throw TOTPError.keychain(status) }
+    }
+
+    static func makeSaveQuery(secret: Data, for id: String, service: String) throws -> [String: Any] {
         guard let access = SecAccessControlCreateWithFlags(
             nil,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
@@ -86,27 +163,28 @@ public final class KeychainTOTPSecretStore: TOTPSecretStore {
             nil
         ) else { throw TOTPError.keychain(errSecParam) }
 
-        let query: [String: Any] = [
+        return [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: id,
             kSecValueData as String: secret,
-            kSecAttrAccessControl as String: access
+            kSecAttrAccessControl as String: access,
         ]
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else { throw TOTPError.keychain(status) }
     }
 
     public func readSecret(for id: String, reason: String) throws -> Data {
-        let context = LAContext()
-        context.localizedReason = reason
-        let query: [String: Any] = [
+        try authorizer.authorize(reason: reason)
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: id,
-            kSecReturnData as String: true,
-            kSecUseAuthenticationContext as String: context
+            kSecReturnData as String: true
         ]
+        // Reuse the context that unlocked the page/CLI so legacy userPresence
+        // ACLs do not show a second Keychain prompt.
+        if let context = (authorizer as? AuthenticationContextProviding)?.authenticationContext {
+            query[kSecUseAuthenticationContext as String] = context
+        }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { throw TOTPError.keychain(status) }
@@ -146,6 +224,7 @@ public enum TOTPGenerator {
 public final class TOTPVault {
     public private(set) var entries: [TOTPEntryMetadata]
     private let secretStore: TOTPSecretStore
+    private var cachedSecrets: [String: Data] = [:]
     private let metadataURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -187,34 +266,61 @@ public final class TOTPVault {
         }
         let label = String(components.path.dropFirst()).removingPercentEncoding ?? ""
         let parts = label.split(separator: ":", maxSplits: 1).map(String.init)
-        let query = Dictionary(uniqueKeysWithValues: (components.queryItems ?? []).map { ($0.name.lowercased(), $0.value ?? "") })
+        var query: [String: String] = [:]
+        for item in components.queryItems ?? [] {
+            let key = item.name.lowercased()
+            guard query[key] == nil else { throw TOTPError.invalidURI("参数 \(key) 重复") }
+            query[key] = item.value ?? ""
+        }
         guard let secret = query["secret"], !secret.isEmpty else { throw TOTPError.invalidURI("缺少 secret") }
         let issuer = query["issuer"] ?? (parts.count > 1 ? parts[0] : "Authenticator")
         let account = parts.count > 1 ? parts[1] : (parts.first ?? "Agent")
-        let digits = Int(query["digits"] ?? "6") ?? 6
-        let period = Int(query["period"] ?? "30") ?? 30
+        let algorithm = query["algorithm"] ?? "SHA1"
+        guard algorithm.uppercased() == "SHA1" else { throw TOTPError.unsupportedAlgorithm(algorithm) }
+        let digits = try integerQueryValue(query, name: "digits", defaultValue: 6)
+        let period = try integerQueryValue(query, name: "period", defaultValue: 30)
         return try add(issuer: issuer, account: account, secret: secret, digits: digits, period: period)
     }
 
     public func delete(id: String) throws {
         guard entries.contains(where: { $0.id == id }) else { throw TOTPError.entryNotFound }
         try secretStore.deleteSecret(for: id)
+        cachedSecrets.removeValue(forKey: id)
         entries.removeAll { $0.id == id }
         try persist()
     }
 
     public func code(for id: String, at date: Date = Date()) throws -> String {
         guard let entry = entries.first(where: { $0.id == id }) else { throw TOTPError.entryNotFound }
-        let data = try secretStore.readSecret(for: id, reason: "AgentHub 需要读取 \(entry.issuer) 的验证码")
+        let data: Data
+        if let cached = cachedSecrets[id] {
+            data = cached
+        } else {
+            data = try secretStore.readSecret(for: id, reason: "AgentHub 需要读取 \(entry.issuer) 的验证码")
+            cachedSecrets[id] = data
+        }
         guard let secret = String(data: data, encoding: .utf8) else { throw TOTPError.invalidSecret }
         return try TOTPGenerator.code(secret: secret, at: date, digits: entry.digits, period: entry.period)
+    }
+
+    /// Clear decrypted secrets when the management page is left or locked.
+    public func clearCachedSecrets() {
+        cachedSecrets.removeAll(keepingCapacity: false)
     }
 
     public func metadata(for id: String) -> TOTPEntryMetadata? { entries.first { $0.id == id } }
 
     public func metadata(issuer: String, account: String) -> TOTPEntryMetadata? {
-        let id = TOTPEntryMetadata.makeID(issuer: issuer, account: account)
-        return metadata(for: id)
+        entries.first {
+            $0.issuer.caseInsensitiveCompare(issuer) == .orderedSame
+                && $0.account.caseInsensitiveCompare(account) == .orderedSame
+        }
+    }
+
+    private func integerQueryValue(_ query: [String: String], name: String, defaultValue: Int) throws -> Int {
+        guard let raw = query[name] else { return defaultValue }
+        guard let value = Int(raw) else { throw TOTPError.invalidURI("\(name) 必须是整数") }
+        return value
     }
 
     private func persist() throws {
