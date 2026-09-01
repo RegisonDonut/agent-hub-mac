@@ -131,6 +131,7 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(verifyScript.contains("--runtime-smoke"))
         XCTAssertTrue(verifyScript.contains("--pull never"))
         XCTAssertTrue(verifyScript.contains("agenthub-totp"))
+        XCTAssertTrue(verifyScript.contains("secret=$(openssl rand -hex 32)"))
 
         let installScript = try String(contentsOf: root.appendingPathComponent("scripts/install.sh"))
         XCTAssertTrue(installScript.contains("AgentHub-macOS.zip.sha256"))

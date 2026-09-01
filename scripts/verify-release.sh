@@ -144,7 +144,7 @@ print(s.getsockname()[1])
 s.close()
 PY
 )
-  secret=$(openssl rand -hex 24)
+  secret=$(openssl rand -hex 32)
   cat > "$smoke_compose" <<EOF
 services:
   postgres:
