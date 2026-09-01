@@ -46,6 +46,95 @@ fi
 chmod +x "$contents_dir/MacOS/AgentHub"
 chmod +x "$cli_dir/agenthub-totp"
 
+version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$contents_dir/Info.plist")
+build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$contents_dir/Info.plist")
+source_commit=$(git -C "$project_dir" rev-parse HEAD)
+source_dirty=false
+if [[ -n "$(git -C "$project_dir" status --porcelain)" ]]; then
+  source_dirty=true
+fi
+AGENTHUB_MANIFEST_PATH="$contents_dir/Resources/AgentHubRelease.json" \
+AGENTHUB_RUNTIME_DIR="$contents_dir/Resources/BundledRuntime" \
+AGENTHUB_VERSION="$version" \
+AGENTHUB_BUILD_NUMBER="$build_number" \
+AGENTHUB_SOURCE_COMMIT="$source_commit" \
+AGENTHUB_SOURCE_DIRTY="$source_dirty" \
+python3 - <<'PY'
+import datetime
+import hashlib
+import json
+import os
+from pathlib import Path
+
+manifest_path = Path(os.environ["AGENTHUB_MANIFEST_PATH"])
+runtime_dir = Path(os.environ["AGENTHUB_RUNTIME_DIR"])
+versions = {}
+for line in (runtime_dir / "VERSIONS.txt").read_text(encoding="utf-8").splitlines():
+    if ":" in line:
+        key, value = line.split(":", 1)
+        versions[key.strip()] = value.strip()
+
+hashed_files = {}
+for relative in (
+    "VERSIONS.txt",
+    "docker-images-arm64.tar.gz",
+    "docker-images-x86_64.tar.gz",
+    "arm64/codex",
+    "x86_64/codex",
+):
+    path = runtime_dir / relative
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    hashed_files[f"Contents/Resources/BundledRuntime/{relative}"] = digest.hexdigest()
+
+manifest = {
+    "schemaVersion": 1,
+    "version": os.environ["AGENTHUB_VERSION"],
+    "buildNumber": os.environ["AGENTHUB_BUILD_NUMBER"],
+    "sourceCommit": os.environ["AGENTHUB_SOURCE_COMMIT"],
+    "sourceDirty": os.environ["AGENTHUB_SOURCE_DIRTY"] == "true",
+    "builtAt": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "architectures": ["arm64", "x86_64"],
+    "features": [
+        "codex-account-management",
+        "multi-account-routing",
+        "quota-and-work-dashboard",
+        "totp-manager",
+        "touch-id-session-authorization",
+        "agenthub-totp-cli",
+        "offline-sub2api-runtime",
+    ],
+    "requiredFiles": [
+        "Contents/MacOS/AgentHub",
+        "Contents/Helpers/agenthub-totp",
+        "Contents/Resources/BundledRuntime/VERSIONS.txt",
+        "Contents/Resources/BundledRuntime/docker-images-arm64.tar.gz",
+        "Contents/Resources/BundledRuntime/docker-images-x86_64.tar.gz",
+        "Contents/Resources/BundledRuntime/arm64/codex",
+        "Contents/Resources/BundledRuntime/x86_64/codex",
+        "Contents/Resources/BundledRuntime/ThirdPartyLicenses/OpenAI-Codex-Apache-2.0.txt",
+        "Contents/Resources/BundledRuntime/ThirdPartyLicenses/PostgreSQL.txt",
+        "Contents/Resources/BundledRuntime/ThirdPartyLicenses/Redis.txt",
+        "Contents/Resources/BundledRuntime/ThirdPartyLicenses/Sub2API-LGPL-3.0.txt",
+    ],
+    "runtime": {
+        "codex": versions.get("OpenAI Codex CLI"),
+        "sub2api": versions.get("Sub2API"),
+        "postgresql": versions.get("PostgreSQL"),
+        "redis": versions.get("Redis"),
+        "images": [
+            f"weishaw/sub2api:{versions.get('Sub2API')}",
+            f"postgres:{versions.get('PostgreSQL')}",
+            f"redis:{versions.get('Redis')}",
+        ],
+    },
+    "sha256": hashed_files,
+}
+manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+PY
+
 # Restricted entitlements such as application-identifier and
 # keychain-access-groups require a certificate-backed signing identity. They
 # make macOS reject an ad hoc build before launch, so local builds deliberately

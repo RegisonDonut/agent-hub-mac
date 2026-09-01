@@ -71,42 +71,106 @@ public protocol TOTPSecretStore: AnyObject {
     func deleteSecret(for id: String) throws
 }
 
+public protocol UserPresenceAuthorizer: AnyObject {
+    func authorize(reason: String) throws
+}
+
+public protocol AuthenticationContextProviding: AnyObject {
+    var authenticationContext: LAContext? { get }
+}
+
+public final class LocalUserPresenceAuthorizer: UserPresenceAuthorizer, AuthenticationContextProviding {
+    public private(set) var authenticationContext: LAContext?
+
+    public init() {}
+
+    public func authorize(reason: String) throws {
+        let context = LAContext()
+        var authorized = false
+        var authorizationError: Error?
+        let semaphore = DispatchSemaphore(value: 0)
+        context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason) { success, error in
+            authorized = success
+            authorizationError = error
+            semaphore.signal()
+        }
+        semaphore.wait()
+        guard authorized else {
+            authenticationContext = nil
+            if let laError = authorizationError as? LAError, laError.code == .userCancel {
+                throw TOTPError.keychain(errSecUserCanceled)
+            }
+            throw TOTPError.keychain(errSecAuthFailed)
+        }
+        authenticationContext = context
+    }
+}
+
+public final class SessionUserPresenceAuthorizer: UserPresenceAuthorizer, AuthenticationContextProviding {
+    private let underlying: UserPresenceAuthorizer
+    private var isUnlocked = false
+
+    public var authenticationContext: LAContext? {
+        (underlying as? AuthenticationContextProviding)?.authenticationContext
+    }
+
+    public init(underlying: UserPresenceAuthorizer = LocalUserPresenceAuthorizer()) {
+        self.underlying = underlying
+    }
+
+    public func unlock(reason: String) throws {
+        try underlying.authorize(reason: reason)
+        isUnlocked = true
+    }
+
+    public func authorize(reason: String) throws {
+        if !isUnlocked {
+            try unlock(reason: reason)
+        }
+    }
+
+    public func lock() {
+        isUnlocked = false
+    }
+}
+
 public final class KeychainTOTPSecretStore: TOTPSecretStore {
     private let service: String
+    private let authorizer: UserPresenceAuthorizer
 
-    public init(service: String = "com.regisondonut.AgentHub.totp") {
+    public init(
+        service: String = "com.regisondonut.AgentHub.totp",
+        authorizer: UserPresenceAuthorizer = LocalUserPresenceAuthorizer()
+    ) {
         self.service = service
+        self.authorizer = authorizer
     }
 
     public func save(secret: Data, for id: String) throws {
-        guard let access = SecAccessControlCreateWithFlags(
-            nil,
-            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
-            [.userPresence],
-            nil
-        ) else { throw TOTPError.keychain(errSecParam) }
-
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: id,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             kSecValueData as String: secret,
-            kSecAttrAccessControl as String: access
         ]
         let status = SecItemAdd(query as CFDictionary, nil)
         guard status == errSecSuccess else { throw TOTPError.keychain(status) }
     }
 
     public func readSecret(for id: String, reason: String) throws -> Data {
-        let context = LAContext()
-        context.localizedReason = reason
-        let query: [String: Any] = [
+        try authorizer.authorize(reason: reason)
+        var query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: id,
-            kSecReturnData as String: true,
-            kSecUseAuthenticationContext as String: context
+            kSecReturnData as String: true
         ]
+        // Reuse the context that unlocked the page/CLI so legacy userPresence
+        // ACLs do not show a second Keychain prompt.
+        if let context = (authorizer as? AuthenticationContextProviding)?.authenticationContext {
+            query[kSecUseAuthenticationContext as String] = context
+        }
         var result: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &result)
         guard status == errSecSuccess, let data = result as? Data else { throw TOTPError.keychain(status) }
@@ -146,6 +210,7 @@ public enum TOTPGenerator {
 public final class TOTPVault {
     public private(set) var entries: [TOTPEntryMetadata]
     private let secretStore: TOTPSecretStore
+    private var cachedSecrets: [String: Data] = [:]
     private let metadataURL: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
@@ -205,9 +270,20 @@ public final class TOTPVault {
 
     public func code(for id: String, at date: Date = Date()) throws -> String {
         guard let entry = entries.first(where: { $0.id == id }) else { throw TOTPError.entryNotFound }
-        let data = try secretStore.readSecret(for: id, reason: "AgentHub 需要读取 \(entry.issuer) 的验证码")
+        let data: Data
+        if let cached = cachedSecrets[id] {
+            data = cached
+        } else {
+            data = try secretStore.readSecret(for: id, reason: "AgentHub 需要读取 \(entry.issuer) 的验证码")
+            cachedSecrets[id] = data
+        }
         guard let secret = String(data: data, encoding: .utf8) else { throw TOTPError.invalidSecret }
         return try TOTPGenerator.code(secret: secret, at: date, digits: entry.digits, period: entry.period)
+    }
+
+    /// Clear decrypted secrets when the management page is left or locked.
+    public func clearCachedSecrets() {
+        cachedSecrets.removeAll(keepingCapacity: false)
     }
 
     public func metadata(for id: String) -> TOTPEntryMetadata? { entries.first { $0.id == id } }

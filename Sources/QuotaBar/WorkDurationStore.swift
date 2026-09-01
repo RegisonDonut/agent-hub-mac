@@ -101,9 +101,81 @@ enum WorkDurationCalculator {
     }
 }
 
+struct SessionHistoryTurn: Equatable, Sendable {
+    let start: Date
+    let end: Date?
+}
+
+enum SessionHistoryParser {
+    static func parse(data: Data, threadID: String, now: Date) throws -> [WorkInterval] {
+        try parseTurns(data: data).compactMap { turn in
+            let end = turn.end ?? now
+            guard end > turn.start else { return nil }
+            return WorkInterval(threadID: threadID, start: turn.start, end: end)
+        }
+    }
+
+    static func parseTurns(data: Data) throws -> [SessionHistoryTurn] {
+        var starts: [String: Date] = [:]
+        var turns: [SessionHistoryTurn] = []
+        let decoder = JSONDecoder()
+
+        for line in data.split(separator: 0x0A) where !line.isEmpty {
+            guard let event = try? decoder.decode(SessionHistoryEvent.self, from: Data(line)),
+                  let eventType = event.payload.type,
+                  let turnID = event.payload.turnID else { continue }
+
+            switch eventType {
+            case "task_started":
+                if let startedAt = event.payload.startedAt {
+                    starts[turnID] = Date(timeIntervalSince1970: TimeInterval(startedAt))
+                }
+            case "task_complete", "turn_completed", "turn_aborted":
+                guard let start = starts.removeValue(forKey: turnID) else { continue }
+                let end: Date?
+                if let completedAt = event.payload.completedAt {
+                    end = Date(timeIntervalSince1970: TimeInterval(completedAt))
+                } else if let durationMilliseconds = event.payload.durationMilliseconds {
+                    end = start.addingTimeInterval(TimeInterval(durationMilliseconds) / 1000)
+                } else {
+                    end = nil
+                }
+                turns.append(SessionHistoryTurn(start: start, end: end))
+            default:
+                continue
+            }
+        }
+
+        turns.append(contentsOf: starts.values.map { SessionHistoryTurn(start: $0, end: nil) })
+        return turns.sorted { $0.start < $1.start }
+    }
+}
+
+private struct SessionHistoryEvent: Decodable {
+    let payload: SessionHistoryPayload
+}
+
+private struct SessionHistoryPayload: Decodable {
+    let type: String?
+    let turnID: String?
+    let startedAt: Int64?
+    let completedAt: Int64?
+    let durationMilliseconds: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case turnID = "turn_id"
+        case startedAt = "started_at"
+        case completedAt = "completed_at"
+        case durationMilliseconds = "duration_ms"
+    }
+}
+
 @MainActor
 final class WorkDurationStore: ObservableObject {
-    static let refreshInterval: TimeInterval = 60 * 60
+    /// Work sessions are displayed as a live dashboard, so keep today's total
+    /// no more than one minute behind the local Codex history.
+    static let refreshInterval: TimeInterval = 60
 
     @Published private(set) var snapshot = WorkDashboardSnapshot()
     @Published private(set) var isRefreshing = false
@@ -111,6 +183,12 @@ final class WorkDurationStore: ObservableObject {
 
     private let fileManager: FileManager
     private var lifecycleTask: Task<Void, Never>?
+    private var sessionFileCache: [URL: CachedSessionFile] = [:]
+
+    private struct CachedSessionFile {
+        let modificationDate: Date
+        let turns: [SessionHistoryTurn]
+    }
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
@@ -122,9 +200,15 @@ final class WorkDurationStore: ObservableObject {
             guard let self else { return }
             await refresh()
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(Self.refreshInterval * 1_000_000_000))
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(Self.refreshInterval * 1_000_000_000))
+                } catch {
+                    break
+                }
+                guard !Task.isCancelled else { break }
                 await refresh()
             }
+            lifecycleTask = nil
         }
     }
 
@@ -197,12 +281,72 @@ final class WorkDurationStore: ObservableObject {
         }
         let data = try Data(contentsOf: outputURL)
         let rows = try JSONDecoder().decode([WorkIntervalRow].self, from: data)
-        return rows.compactMap { row in
+        let databaseIntervals: [WorkInterval] = rows.compactMap { row in
             let start = Date(timeIntervalSince1970: Double(row.startedAtMilliseconds) / 1000)
             let end = Date(timeIntervalSince1970: Double(row.endedAtMilliseconds) / 1000)
             guard end > start else { return nil }
             return WorkInterval(threadID: row.threadID, start: start, end: end)
         }
+        return databaseIntervals + loadRecentSessionIntervals(now: Date())
+    }
+
+    private func loadRecentSessionIntervals(now: Date) -> [WorkInterval] {
+        let sessionsDirectory = fileManager.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex/sessions", isDirectory: true)
+        let calendar = Calendar.autoupdatingCurrent
+        var files: [URL] = []
+
+        for dayOffset in 0...1 {
+            guard let date = calendar.date(byAdding: .day, value: -dayOffset, to: now) else { continue }
+            let components = calendar.dateComponents([.year, .month, .day], from: date)
+            guard let year = components.year, let month = components.month, let day = components.day else { continue }
+            let directory = sessionsDirectory
+                .appendingPathComponent(String(format: "%04d", year), isDirectory: true)
+                .appendingPathComponent(String(format: "%02d", month), isDirectory: true)
+                .appendingPathComponent(String(format: "%02d", day), isDirectory: true)
+            guard let enumerator = fileManager.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.isRegularFileKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            ) else { continue }
+            for case let url as URL in enumerator where url.pathExtension == "jsonl" {
+                files.append(url)
+            }
+        }
+
+        var intervals: [WorkInterval] = []
+        for url in files {
+            let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+            let modificationDate = values?.contentModificationDate ?? .distantPast
+            let cached: CachedSessionFile
+            if let existing = sessionFileCache[url], existing.modificationDate == modificationDate {
+                cached = existing
+            } else {
+                guard let data = try? Data(contentsOf: url),
+                      let turns = try? SessionHistoryParser.parseTurns(data: data) else { continue }
+                cached = CachedSessionFile(modificationDate: modificationDate, turns: turns)
+                sessionFileCache[url] = cached
+            }
+            let threadID = sessionID(from: url)
+            intervals.append(contentsOf: cached.turns.compactMap { turn in
+                guard turn.end != nil || cached.modificationDate >= now.addingTimeInterval(-10 * 60) else {
+                    return nil
+                }
+                let end = turn.end ?? now
+                guard end > turn.start else { return nil }
+                return WorkInterval(threadID: threadID, start: turn.start, end: end)
+            })
+        }
+
+        let activeURLs = Set(files)
+        sessionFileCache = sessionFileCache.filter { activeURLs.contains($0.key) }
+        return intervals
+    }
+
+    private func sessionID(from url: URL) -> String {
+        let components = url.deletingPathExtension().lastPathComponent.split(separator: "-")
+        guard components.count >= 5 else { return url.deletingPathExtension().lastPathComponent }
+        return components.suffix(5).joined(separator: "-")
     }
 }
 

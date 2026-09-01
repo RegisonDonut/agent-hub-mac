@@ -39,7 +39,7 @@ struct WorkDashboardView: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text("数据看板")
                     .font(.headline)
-                Text("本机 Codex 会话 · 每小时自动更新")
+                Text("本机 Codex 会话 · 每分钟自动更新")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }

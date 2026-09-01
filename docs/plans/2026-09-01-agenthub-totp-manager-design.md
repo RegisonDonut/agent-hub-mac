@@ -4,7 +4,7 @@
 
 **Goal:** Add a local AgentHub verification-code manager that stores TOTP seeds in the macOS Keychain, requires Touch ID or the local password for every secret read, and exposes a CLI for local agents.
 
-**Architecture:** `AgentHubTOTPKit` is a shared Swift module. It stores only entry metadata in the AgentHub application-support directory and stores each seed as a Keychain generic-password item protected by `SecAccessControl` with `.userPresence`. The SwiftUI module uses the store for CRUD and one-shot code display. The `agenthub-totp` executable uses the same store and prints only a current six-digit code to stdout, so a scheduled agent can capture it without learning the seed. No Passwords UI automation or seed export is used.
+**Architecture:** `AgentHubTOTPKit` is a shared Swift module. It stores only entry metadata in the AgentHub application-support directory and stores each seed as a Keychain generic-password item. Every read first passes through `LocalAuthentication` (`Touch ID` or the local password), because restricted Keychain access-group entitlements cannot be used by a local ad hoc build. The SwiftUI module uses the store for CRUD and one-shot code display. The `agenthub-totp` executable uses the same store and prints only a current six-digit code to stdout, so a scheduled agent can capture it without learning the seed. No Passwords UI automation or seed export is used.
 
 **Tech Stack:** Swift 5.9, SwiftUI, Security.framework, LocalAuthentication, CryptoKit, XCTest, macOS 13+.
 
@@ -23,4 +23,3 @@
 4. Invalid Base32/URI input, missing entries, cancelled Touch ID, and unavailable Keychain access produce actionable errors and no partial writes.
 5. Unit tests cover Base32 decoding, RFC 6238 vectors, metadata persistence, Keychain error handling seams, and CLI argument parsing.
 6. Existing AgentHub account and dashboard tests remain green.
-
