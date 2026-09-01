@@ -206,7 +206,15 @@ services:
       timeout: 5s
       retries: 40
 EOF
-  docker compose --project-name "$smoke_project" --file "$smoke_compose" up -d --pull never --wait --wait-timeout 180
+  if ! docker compose --project-name "$smoke_project" --file "$smoke_compose" up -d --pull never --wait --wait-timeout 180; then
+    echo "Bundled runtime failed to become healthy. Container status:" >&2
+    docker compose --project-name "$smoke_project" --file "$smoke_compose" ps >&2 || true
+    echo "Bundled runtime logs (test secrets redacted):" >&2
+    docker compose --project-name "$smoke_project" --file "$smoke_compose" \
+      logs --no-color --tail 200 sub2api postgres redis 2>&1 \
+      | sed "s/$secret/[REDACTED]/g" >&2 || true
+    exit 1
+  fi
   health_body=$(curl -fsS --retry 20 --retry-delay 2 --retry-all-errors "http://127.0.0.1:$port/health")
   [[ -n "$health_body" ]] || { echo "Sub2API health response is empty" >&2; exit 1; }
   docker compose --project-name "$smoke_project" --file "$smoke_compose" ps
