@@ -125,6 +125,7 @@ final class AgentHubTests: XCTestCase {
         let packageScript = try String(contentsOf: root.appendingPathComponent("scripts/package-release.sh"))
         XCTAssertTrue(packageScript.contains("verify-release.sh"))
         XCTAssertTrue(packageScript.contains("AgentHub-macOS.zip.sha256"))
+        XCTAssertFalse(packageScript.contains("--sequesterRsrc"))
 
         let verifyScript = try String(contentsOf: root.appendingPathComponent("scripts/verify-release.sh"))
         XCTAssertTrue(verifyScript.contains("AgentHubRelease.json"))
@@ -134,12 +135,23 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(verifyScript.contains("secret=$(openssl rand -hex 32)"))
         XCTAssertTrue(verifyScript.contains("$runtime_dir/docker-compose.yml"))
         XCTAssertFalse(verifyScript.contains("cat > \"$smoke_compose\""))
+        XCTAssertTrue(verifyScript.contains("import zipfile"))
+        XCTAssertTrue(verifyScript.contains("fileInventory"))
+        XCTAssertTrue(verifyScript.contains("signing"))
 
         let installScript = try String(contentsOf: root.appendingPathComponent("scripts/install.sh"))
         XCTAssertTrue(installScript.contains("AgentHub-macOS.zip.sha256"))
         XCTAssertTrue(installScript.contains("shasum -a 256 -c"))
         XCTAssertTrue(installScript.contains("codesign --verify --deep --strict"))
         XCTAssertFalse(installScript.contains("xattr -dr com.apple.quarantine"))
+        XCTAssertTrue(installScript.contains("ad-hoc"))
+
+        let readme = try String(contentsOf: root.appendingPathComponent("README.md"))
+        XCTAssertTrue(readme.contains("ad-hoc"))
+
+        let verifyBundleScript = try String(contentsOf: root.appendingPathComponent("scripts/verify-bundle.sh"))
+        XCTAssertTrue(verifyBundleScript.contains("f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963"))
+        XCTAssertTrue(verifyBundleScript.contains("c646bd178240bb50efd81c2f9919dd9124b126c815911f6c1b6db400786c5ccd"))
     }
 
     func testTOTPCycleCountdownUsesConfiguredPeriod() {

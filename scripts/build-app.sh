@@ -53,6 +53,11 @@ source_dirty=false
 if [[ -n "$(git -C "$project_dir" status --porcelain)" ]]; then
   source_dirty=true
 fi
+sign_identity="${AGENTHUB_CODESIGN_IDENTITY:--}"
+signing_kind="certificate"
+if [[ "$sign_identity" == "-" ]]; then
+  signing_kind="adhoc"
+fi
 AGENTHUB_MANIFEST_PATH="$contents_dir/Resources/AgentHubRelease.json" \
 AGENTHUB_RUNTIME_DIR="$contents_dir/Resources/BundledRuntime" \
 AGENTHUB_SOURCE_FILE="$project_dir/Sources/QuotaBar/Sub2APIServiceManager.swift" \
@@ -60,12 +65,14 @@ AGENTHUB_VERSION="$version" \
 AGENTHUB_BUILD_NUMBER="$build_number" \
 AGENTHUB_SOURCE_COMMIT="$source_commit" \
 AGENTHUB_SOURCE_DIRTY="$source_dirty" \
+AGENTHUB_SIGNING_KIND="$signing_kind" \
 python3 - <<'PY'
 import datetime
 import hashlib
 import json
 import os
 import re
+import stat
 import textwrap
 from pathlib import Path
 
@@ -83,24 +90,35 @@ for line in (runtime_dir / "VERSIONS.txt").read_text(encoding="utf-8").splitline
         key, value = line.split(":", 1)
         versions[key.strip()] = value.strip()
 
-hashed_files = {}
-for relative in (
-    "VERSIONS.txt",
-    "docker-compose.yml",
-    "docker-images-arm64.tar.gz",
-    "docker-images-x86_64.tar.gz",
-    "arm64/codex",
-    "x86_64/codex",
-):
-    path = runtime_dir / relative
+contents_dir = manifest_path.parents[1]
+executable_paths = {
+    "Contents/MacOS/AgentHub",
+    "Contents/Helpers/agenthub-totp",
+}
+file_inventory = {}
+for path in sorted(contents_dir.rglob("*")):
+    if path.is_symlink():
+        raise SystemExit(f"release bundle cannot contain symlinks: {path}")
+    if path.is_dir():
+        continue
+    if not path.is_file():
+        raise SystemExit(f"release bundle contains a special file: {path}")
+    relative = f"Contents/{path.relative_to(contents_dir).as_posix()}"
+    if relative in executable_paths:
+        file_inventory[relative] = {"validation": "codesign+lipo"}
+        continue
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    hashed_files[f"Contents/Resources/BundledRuntime/{relative}"] = digest.hexdigest()
+    file_inventory[relative] = {
+        "size": path.stat().st_size,
+        "mode": format(stat.S_IMODE(path.stat().st_mode), "04o"),
+        "sha256": digest.hexdigest(),
+    }
 
 manifest = {
-    "schemaVersion": 1,
+    "schemaVersion": 2,
     "version": os.environ["AGENTHUB_VERSION"],
     "buildNumber": os.environ["AGENTHUB_BUILD_NUMBER"],
     "sourceCommit": os.environ["AGENTHUB_SOURCE_COMMIT"],
@@ -116,20 +134,8 @@ manifest = {
         "agenthub-totp-cli",
         "offline-sub2api-runtime",
     ],
-    "requiredFiles": [
-        "Contents/MacOS/AgentHub",
-        "Contents/Helpers/agenthub-totp",
-        "Contents/Resources/BundledRuntime/VERSIONS.txt",
-        "Contents/Resources/BundledRuntime/docker-compose.yml",
-        "Contents/Resources/BundledRuntime/docker-images-arm64.tar.gz",
-        "Contents/Resources/BundledRuntime/docker-images-x86_64.tar.gz",
-        "Contents/Resources/BundledRuntime/arm64/codex",
-        "Contents/Resources/BundledRuntime/x86_64/codex",
-        "Contents/Resources/BundledRuntime/ThirdPartyLicenses/OpenAI-Codex-Apache-2.0.txt",
-        "Contents/Resources/BundledRuntime/ThirdPartyLicenses/PostgreSQL.txt",
-        "Contents/Resources/BundledRuntime/ThirdPartyLicenses/Redis.txt",
-        "Contents/Resources/BundledRuntime/ThirdPartyLicenses/Sub2API-LGPL-3.0.txt",
-    ],
+    "signing": {"kind": os.environ["AGENTHUB_SIGNING_KIND"]},
+    "fileInventory": file_inventory,
     "runtime": {
         "codex": versions.get("OpenAI Codex CLI"),
         "sub2api": versions.get("Sub2API"),
@@ -141,7 +147,6 @@ manifest = {
             f"redis:{versions.get('Redis')}",
         ],
     },
-    "sha256": hashed_files,
 }
 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 PY
@@ -150,7 +155,6 @@ PY
 # keychain-access-groups require a certificate-backed signing identity. They
 # make macOS reject an ad hoc build before launch, so local builds deliberately
 # omit them. A distribution build can opt in with a real identity.
-sign_identity="${AGENTHUB_CODESIGN_IDENTITY:--}"
 codesign_options=(--force --sign "$sign_identity")
 if [[ "$sign_identity" != "-" && "${AGENTHUB_USE_RESTRICTED_ENTITLEMENTS:-0}" == "1" ]]; then
   codesign_options+=(--entitlements "$project_dir/Resources/AgentHub.entitlements")

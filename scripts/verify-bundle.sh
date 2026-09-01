@@ -42,7 +42,7 @@ test -f "$source_file" || { echo "missing $source_file" >&2; exit 1 }
 test -d "$runtime_dir" || { echo "missing $runtime_dir" >&2; exit 1 }
 
 SOURCE_FILE="$source_file" RUNTIME_DIR="$runtime_dir" LABEL="$label" python3 - <<'PY'
-import gzip, io, json, os, re, subprocess, sys, tarfile, textwrap
+import gzip, hashlib, io, json, os, re, subprocess, sys, tarfile, textwrap
 
 source_file = os.environ["SOURCE_FILE"]
 runtime_dir = os.environ["RUNTIME_DIR"]
@@ -150,6 +150,10 @@ for app_arch, want_arches in arch_alias.items():
 
 # ---- 3. codex binaries --------------------------------------------------
 print("[codex]")
+expected_codex_sha256 = {
+    "arm64": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
+    "x86_64": "c646bd178240bb50efd81c2f9919dd9124b126c815911f6c1b6db400786c5ccd",
+}
 for app_arch, want in (("arm64", "arm64"), ("x86_64", "x86_64")):
     binary = os.path.join(runtime_dir, app_arch, "codex")
     if not os.path.exists(binary):
@@ -163,6 +167,14 @@ for app_arch, want in (("arm64", "arm64"), ("x86_64", "x86_64")):
         fail(f"codex/{app_arch}: binary is {archs}, expected {want}")
     else:
         ok(f"codex/{app_arch}: {' '.join(archs)}")
+    digest = hashlib.sha256()
+    with open(binary, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != expected_codex_sha256[app_arch]:
+        fail(f"codex/{app_arch}: SHA-256 does not match the pinned Codex 0.149.0 binary")
+    else:
+        ok(f"codex/{app_arch}: pinned Codex 0.149.0 SHA-256")
 print()
 
 # ---- 4. VERSIONS.txt must describe what is really shipped ---------------
@@ -178,6 +190,7 @@ else:
             k, _, v = line.partition(":")
             claimed[k.strip()] = v.strip()
     expect = {}
+    expect["OpenAI Codex CLI"] = "0.149.0"
     for image in required:
         repo, _, tag = image.rpartition(":")
         if repo == "postgres":

@@ -44,6 +44,44 @@ trap cleanup EXIT
 if [[ -d "$target" ]]; then
   app_dir="${target:A}"
 elif [[ -f "$target" ]]; then
+  ZIP_TARGET="$target" python3 - <<'PY'
+import os
+import stat
+import zipfile
+from pathlib import PurePosixPath
+
+archive = os.environ["ZIP_TARGET"]
+seen = set()
+seen_casefolded = set()
+total_size = 0
+with zipfile.ZipFile(archive) as bundle:
+    for entry in bundle.infolist():
+        name = entry.filename
+        if not name or "\\" in name or name.startswith("/"):
+            raise SystemExit(f"unsafe ZIP path: {name!r}")
+        normalized = name[:-1] if name.endswith("/") else name
+        parts = normalized.split("/")
+        if any(part in ("", ".", "..") for part in parts):
+            raise SystemExit(f"unsafe ZIP path: {name!r}")
+        if PurePosixPath(normalized).parts[0] != "AgentHub.app":
+            raise SystemExit(f"unexpected top-level ZIP entry: {name}")
+        if "__MACOSX" in parts:
+            raise SystemExit(f"AppleDouble metadata is not allowed in release ZIP: {name}")
+        if normalized in seen or normalized.casefold() in seen_casefolded:
+            raise SystemExit(f"duplicate ZIP path: {name}")
+        seen.add(normalized)
+        seen_casefolded.add(normalized.casefold())
+        if entry.flag_bits & 0x1:
+            raise SystemExit(f"encrypted ZIP entries are not allowed: {name}")
+        mode = entry.external_attr >> 16
+        kind = stat.S_IFMT(mode)
+        expected_kind = stat.S_IFDIR if entry.is_dir() else stat.S_IFREG
+        if entry.create_system != 3 or kind != expected_kind:
+            raise SystemExit(f"symlink or special ZIP entry is not allowed: {name}")
+        total_size += entry.file_size
+        if entry.file_size > 2 * 1024**3 or total_size > 4 * 1024**3:
+            raise SystemExit("release ZIP expands beyond the allowed size")
+PY
   ditto -x -k "$target" "$work_dir/unpacked"
   app_dir="$work_dir/unpacked/AgentHub.app"
 else
@@ -58,6 +96,12 @@ totp_binary="$app_dir/Contents/Helpers/agenthub-totp"
 runtime_dir="$app_dir/Contents/Resources/BundledRuntime"
 
 codesign --verify --deep --strict "$app_dir"
+codesign --verify --strict "$totp_binary"
+signature_details="$(codesign -dv --verbose=4 "$app_dir" 2>&1)"
+[[ "$signature_details" == *"Signature=adhoc"* && "$signature_details" == *"TeamIdentifier=not set"* ]] || {
+  echo "Release signature does not match manifest requirement: expected ad-hoc with no TeamIdentifier" >&2
+  exit 1
+}
 
 for binary in "$main_binary" "$totp_binary"; do
   test -x "$binary" || { echo "Missing executable: $binary" >&2; exit 1; }
@@ -74,6 +118,8 @@ import hashlib
 import json
 import os
 import plistlib
+import re
+import stat
 from pathlib import Path
 
 app = Path(os.environ["APP_DIR"])
@@ -88,7 +134,8 @@ expected_features = {
     "agenthub-totp-cli",
     "offline-sub2api-runtime",
 }
-expected_required_files = {
+expected_inventory_files = {
+    "Contents/Info.plist",
     "Contents/MacOS/AgentHub",
     "Contents/Helpers/agenthub-totp",
     "Contents/Resources/BundledRuntime/VERSIONS.txt",
@@ -102,15 +149,15 @@ expected_required_files = {
     "Contents/Resources/BundledRuntime/ThirdPartyLicenses/Redis.txt",
     "Contents/Resources/BundledRuntime/ThirdPartyLicenses/Sub2API-LGPL-3.0.txt",
 }
-expected_hashed_files = {
-    "Contents/Resources/BundledRuntime/VERSIONS.txt",
-    "Contents/Resources/BundledRuntime/docker-compose.yml",
-    "Contents/Resources/BundledRuntime/docker-images-arm64.tar.gz",
-    "Contents/Resources/BundledRuntime/docker-images-x86_64.tar.gz",
-    "Contents/Resources/BundledRuntime/arm64/codex",
-    "Contents/Resources/BundledRuntime/x86_64/codex",
+executable_inventory = {
+    "Contents/MacOS/AgentHub",
+    "Contents/Helpers/agenthub-totp",
 }
-if manifest.get("schemaVersion") != 1:
+generated_files = {
+    "Contents/Resources/AgentHubRelease.json",
+    "Contents/_CodeSignature/CodeResources",
+}
+if manifest.get("schemaVersion") != 2:
     raise SystemExit("release manifest schemaVersion mismatch")
 if manifest.get("version") != info.get("CFBundleShortVersionString"):
     raise SystemExit("release manifest version mismatch")
@@ -118,27 +165,60 @@ if manifest.get("buildNumber") != info.get("CFBundleVersion"):
     raise SystemExit("release manifest build number mismatch")
 if set(manifest.get("features") or []) != expected_features:
     raise SystemExit("release manifest feature inventory mismatch")
-if set(manifest.get("requiredFiles") or []) != expected_required_files:
-    raise SystemExit("release manifest required file inventory mismatch")
-if set((manifest.get("sha256") or {}).keys()) != expected_hashed_files:
-    raise SystemExit("release manifest digest inventory mismatch")
+if manifest.get("signing") != {"kind": "adhoc"}:
+    raise SystemExit("release manifest signing requirement mismatch")
 if manifest.get("sourceDirty"):
     raise SystemExit("release manifest was built from a dirty worktree")
 expected_commit = os.environ.get("EXPECTED_COMMIT")
 if expected_commit and manifest.get("sourceCommit") != expected_commit:
     raise SystemExit("release manifest source commit mismatch")
-for relative in manifest.get("requiredFiles") or []:
-    if not (app / relative).is_file():
-        raise SystemExit(f"required release file missing: {relative}")
-for relative, expected in (manifest.get("sha256") or {}).items():
+
+inventory = manifest.get("fileInventory")
+if not isinstance(inventory, dict) or set(inventory) != expected_inventory_files:
+    raise SystemExit("release manifest fileInventory mismatch")
+for relative in executable_inventory:
+    if inventory.get(relative) != {"validation": "codesign+lipo"}:
+        raise SystemExit(f"release executable validation mismatch: {relative}")
+
+actual_files = set()
+for path in (app / "Contents").rglob("*"):
+    if path.is_symlink():
+        raise SystemExit(f"release app contains a symlink: {path}")
+    if path.is_dir():
+        continue
+    if not path.is_file():
+        raise SystemExit(f"release app contains a special file: {path}")
+    actual_files.add(f"Contents/{path.relative_to(app / 'Contents').as_posix()}")
+if actual_files != set(inventory) | generated_files:
+    missing = sorted((set(inventory) | generated_files) - actual_files)
+    extra = sorted(actual_files - (set(inventory) | generated_files))
+    raise SystemExit(f"release app fileInventory mismatch: missing={missing}, extra={extra}")
+
+for relative, expected in inventory.items():
+    path = app / relative
+    if relative in executable_inventory:
+        continue
+    if not isinstance(expected, dict) or set(expected) != {"size", "mode", "sha256"}:
+        raise SystemExit(f"release file metadata is incomplete: {relative}")
+    if expected["size"] != path.stat().st_size:
+        raise SystemExit(f"release artifact size mismatch: {relative}")
+    actual_mode = format(stat.S_IMODE(path.stat().st_mode), "04o")
+    if expected["mode"] != actual_mode:
+        raise SystemExit(f"release artifact mode mismatch: {relative}")
+    if not isinstance(expected["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", expected["sha256"]):
+        raise SystemExit(f"release artifact SHA-256 is invalid: {relative}")
     path = app / relative
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    if digest.hexdigest() != expected:
+    if digest.hexdigest() != expected["sha256"]:
         raise SystemExit(f"release artifact digest mismatch: {relative}")
 runtime = manifest.get("runtime") or {}
+if runtime.get("codex") != "0.149.0":
+    raise SystemExit("release Codex version mismatch")
+if runtime.get("sub2api") != "0.1.179" or runtime.get("postgresql") != "18-alpine" or runtime.get("redis") != "8-alpine":
+    raise SystemExit("release runtime version mismatch")
 if set(runtime.get("images") or []) != {
     "weishaw/sub2api:0.1.179",
     "postgres:18-alpine",

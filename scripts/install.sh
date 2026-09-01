@@ -9,6 +9,12 @@ trap 'rm -rf "$work_dir"' EXIT
 
 command -v curl >/dev/null || { echo "需要 curl 才能下载安装包。" >&2; exit 1; }
 
+cat <<'EOF'
+安全说明：当前团队安装包使用 ad-hoc 签名，没有 Apple Developer ID，也未经过 Apple 公证。
+安装器会保留 macOS quarantine；只应从 RegisonDonut/agent-hub-mac 官方 Release 安装。
+如果 Gatekeeper 阻止首次打开，请按团队批准的方式在 Finder 中手动“打开”，不要移除 quarantine 属性。
+EOF
+
 curl --retry 3 --retry-all-errors --connect-timeout 15 -fL "$release_url" -o "$work_dir/AgentHub-macOS.zip"
 curl --retry 3 --retry-all-errors --connect-timeout 15 -fL "$checksum_url" -o "$work_dir/AgentHub-macOS.zip.sha256"
 (

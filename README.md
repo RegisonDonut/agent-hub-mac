@@ -35,6 +35,8 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 
 也可以从 [Releases](https://github.com/RegisonDonut/agent-hub-mac/releases/latest) 下载 Universal Binary 安装包。
 
+当前团队安装包采用 **ad-hoc 签名**，没有 Apple Developer ID，也未经过 Apple 公证。安装脚本会保留 macOS quarantine，且不会绕过 Gatekeeper；请只使用 `RegisonDonut/agent-hub-mac` 官方 Release 或上面的官方安装脚本。浏览器下载后如果首次打开被拦截，请按团队批准的流程在 Finder 中手动“打开”，不要执行移除 quarantine 属性的命令。
+
 ## 使用
 
 安装后单击 macOS 状态栏中的 OpenAI 图标和额度条，直接进入 Codex 管理中心。
@@ -93,6 +95,6 @@ open dist/AgentHub.app
 ./scripts/package-release.sh
 ```
 
-`package-release.sh` 会在最终 ZIP 上重新验证 universal 主程序与 `agenthub-totp`、代码签名、release manifest、双架构 Codex、双架构 Sub2API/PostgreSQL/Redis 离线镜像、第三方许可证，并用 `--pull never` 在隔离 Docker project 中真实启动本机架构的三项服务。全部通过后才会生成 `AgentHub-macOS.zip` 与对应的 `AgentHub-macOS.zip.sha256`。
+`package-release.sh` 会在最终 ZIP 上重新验证 universal 主程序与 `agenthub-totp`、ad-hoc 代码签名、完整文件清单、release manifest、固定 SHA-256 的双架构 Codex、双架构 Sub2API/PostgreSQL/Redis 离线镜像、第三方许可证，并用 `--pull never` 在隔离 Docker project 中真实启动本机架构的三项服务。全部通过后才会生成 `AgentHub-macOS.zip` 与对应的 `AgentHub-macOS.zip.sha256`。
 
 第三方组件版本、许可证和对应源代码地址随 App 保存在 `Contents/Resources/BundledRuntime/`。
