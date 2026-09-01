@@ -16,6 +16,8 @@ AgentHub 是一个原生 macOS Codex 管理器，统一管理官方 Codex 登录
 - 完整安装包内置 Codex CLI 0.149.0 与 Sub2API/PostgreSQL/Redis 离线镜像，无需首次下载服务镜像
 - 优先使用用户已经安装的 Codex CLI；只有本机没有 Codex 时才使用 App 内置版本，且不会覆盖现有命令
 - 官方额度和多账号池额度均每 5 分钟自动刷新，并同步更新状态栏
+- 数据看板统计最近 24 小时、最近 7 天有效工作时长，并按本机时区展示月度工作量日历
+- 汇总账号池内所有账号的周额度消耗，提供过去 24 小时与 7 天指标，以及 1 小时、4 小时、按天三档额度分布曲线；合计值可超过 100%
 - 多账号模式自动启用高级调度与粘性加权；普通续聊在原账号耗尽且上下文可重建时迁移到可用账号
 - 登录流程和回调输入可跨窗口关闭保留
 - 登录时启动、手动刷新、本地服务重启与退出管理
@@ -42,6 +44,7 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 - Codex 多账号池
 - 添加账号和 OAuth 回调流程
 - 各账号启用开关、额度状态与重置倒计时
+- 数据看板中的工作时长指标、工作量日历和单账号额度使用分布
 - 登录时启动、刷新、服务操作和退出
 
 打开“Codex 多账号”开关后，AgentHub 会自动启动本地服务、创建仅供本机使用的内部连接 Key，并把 Codex CLI provider 切换为 `agenthub_multiaccount`；没有账号时可直接继续添加第一个账号。关闭开关会恢复官方 `openai` provider，并检查官方授权：已有授权则直接切回，没有授权才打开 Codex 官方登录页。官方登录凭据和本地账号池都不会被删除。线路切换只对之后创建的 Codex 线程生效；已经打开的线程不会改变 provider。多账号线路内，普通续聊在上下文可重建时可从耗尽账号迁移到可用账号，进行中的工具调用链则需要新建线程。
@@ -63,6 +66,12 @@ http://127.0.0.1:18080/v1/responses
 ```
 
 内部 Key 限制为 `127.0.0.1` 与 `::1` 来源，保存在权限为 `600` 的本地密钥文件中。Docker 端口固定绑定 loopback；如果实际绑定变成 `0.0.0.0`、局域网地址或其他非本机地址，AgentHub 会停止服务并显示安全错误。
+
+额度历史从 AgentHub 1.10.0 起按每次成功额度刷新持续积累，保留最近 60 天；安装前的额度百分比无法从请求日志准确回算。历史保存在：
+
+```text
+~/Library/Application Support/AgentHub/quota-usage-history.json
+```
 
 > 风险提示：多账号模式会把用户主动添加的 Codex OAuth access token 和 refresh token 保存在本机 PostgreSQL，并通过 ChatGPT Codex backend 转发订阅流量。这不是 OpenAI 公布的通用订阅 API，可能违反上游条款并导致账号受限。请只添加属于自己的账号，不要公开本地端口。
 

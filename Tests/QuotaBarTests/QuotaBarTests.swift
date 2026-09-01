@@ -428,6 +428,193 @@ final class AgentHubTests: XCTestCase {
         XCTAssertEqual(merged[0].end.timeIntervalSince(merged[0].start), 5_400, accuracy: 0.001)
     }
 
+    func testQuotaUsageSummaryAddsPositiveDeltasAcrossReset() {
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let samples = [
+            quotaSample(used: 20, at: now.addingTimeInterval(-4 * 3_600)),
+            quotaSample(used: 35, at: now.addingTimeInterval(-3 * 3_600)),
+            quotaSample(used: 4, at: now.addingTimeInterval(-2 * 3_600)),
+            quotaSample(used: 12, at: now.addingTimeInterval(-3_600))
+        ]
+
+        let summary = QuotaUsageCalculator.summary(
+            samples: samples,
+            duration: 24 * 3_600,
+            now: now
+        )
+
+        XCTAssertEqual(summary.usedPercent, 27)
+        XCTAssertEqual(summary.coveredDuration, 4 * 3_600, accuracy: 0.001)
+        XCTAssertFalse(summary.hasFullCoverage)
+    }
+
+    func testQuotaUsageSummaryUsesSampleBeforeWindowAsBaseline() {
+        let now = Date(timeIntervalSince1970: 3_000_000)
+        let samples = [
+            quotaSample(used: 10, at: now.addingTimeInterval(-25 * 3_600)),
+            quotaSample(used: 18, at: now.addingTimeInterval(-20 * 3_600)),
+            quotaSample(used: 25, at: now.addingTimeInterval(-2 * 3_600))
+        ]
+
+        let summary = QuotaUsageCalculator.summary(
+            samples: samples,
+            duration: 24 * 3_600,
+            now: now
+        )
+
+        XCTAssertEqual(summary.usedPercent, 15)
+        XCTAssertTrue(summary.hasFullCoverage)
+    }
+
+    func testQuotaUsageBucketsUseFourHourLocalBoundaries() throws {
+        let calendar = try shanghaiCalendar()
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 27, hour: 10
+        )))
+        let samples = [
+            quotaSample(used: 10, at: now.addingTimeInterval(-10 * 3_600)),
+            quotaSample(used: 13, at: now.addingTimeInterval(-7 * 3_600)),
+            quotaSample(used: 20, at: now.addingTimeInterval(-3 * 3_600))
+        ]
+
+        let buckets = QuotaUsageCalculator.buckets(
+            samples: samples,
+            granularity: .fourHourly,
+            now: now,
+            calendar: calendar
+        )
+        let usedBuckets = buckets.filter { $0.usedPercent > 0 }
+
+        XCTAssertEqual(usedBuckets.map(\.usedPercent), [3, 7])
+        XCTAssertEqual(calendar.component(.hour, from: usedBuckets[0].start), 0)
+        XCTAssertEqual(calendar.component(.hour, from: usedBuckets[1].start), 4)
+        XCTAssertEqual(
+            calendar.component(.day, from: usedBuckets[1].start),
+            calendar.component(.day, from: now)
+        )
+    }
+
+    func testQuotaUsageBucketsUseLocalWeekBoundaries() throws {
+        let calendar = try shanghaiCalendar()
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(
+            year: 2026, month: 8, day: 27, hour: 10
+        )))
+        let samples = [
+            quotaSample(used: 10, at: try XCTUnwrap(calendar.date(from: DateComponents(
+                year: 2026, month: 8, day: 17, hour: 9
+            )))),
+            quotaSample(used: 14, at: try XCTUnwrap(calendar.date(from: DateComponents(
+                year: 2026, month: 8, day: 18, hour: 9
+            )))),
+            quotaSample(used: 20, at: try XCTUnwrap(calendar.date(from: DateComponents(
+                year: 2026, month: 8, day: 24, hour: 9
+            ))))
+        ]
+
+        let buckets = QuotaUsageCalculator.buckets(
+            samples: samples,
+            granularity: .weekly,
+            now: now,
+            calendar: calendar
+        )
+        let usedBuckets = buckets.filter { $0.usedPercent > 0 }
+
+        XCTAssertEqual(usedBuckets.map(\.usedPercent), [4, 6])
+        XCTAssertEqual(usedBuckets.map { calendar.component(.weekday, from: $0.start) }, [2, 2])
+        XCTAssertEqual(usedBuckets.map { calendar.component(.day, from: $0.start) }, [17, 24])
+    }
+
+    @MainActor
+    func testQuotaUsageHistoryPersistsOneSamplePerRefresh() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let repository = QuotaUsageHistoryRepository(
+            fileURL: directory.appendingPathComponent("quota-history.json")
+        )
+        let store = QuotaUsageStore(repository: repository)
+        let recordedAt = Date(timeIntervalSince1970: 4_000_000)
+        let account = ManagedCodexAccount(
+            id: 7,
+            name: "account@example.com",
+            email: "account@example.com",
+            planType: "pro",
+            status: "active",
+            schedulable: true,
+            fiveHourUsedPercent: 12,
+            weeklyUsedPercent: 34,
+            fiveHourResetAt: nil,
+            weeklyResetAt: recordedAt.addingTimeInterval(7 * 24 * 3_600),
+            usageUpdatedAt: recordedAt
+        )
+
+        store.record([account], now: recordedAt)
+        store.record([account], now: recordedAt)
+
+        XCTAssertEqual(store.samples.count, 1)
+        XCTAssertEqual(repository.load().first?.usedPercent, 34)
+        XCTAssertEqual(store.accounts.first?.email, "account@example.com")
+    }
+
+    @MainActor
+    func testQuotaUsageAggregateAddsEveryAccount() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let repository = QuotaUsageHistoryRepository(
+            fileURL: directory.appendingPathComponent("quota-history.json")
+        )
+        let now = Date(timeIntervalSince1970: 5_000_000)
+        let samples = [
+            QuotaUsageSample(
+                accountID: 1,
+                email: "one@example.com",
+                usedPercent: 10,
+                resetAt: nil,
+                recordedAt: now.addingTimeInterval(-2 * 3_600)
+            ),
+            QuotaUsageSample(
+                accountID: 1,
+                email: "one@example.com",
+                usedPercent: 18,
+                resetAt: nil,
+                recordedAt: now.addingTimeInterval(-3_600)
+            ),
+            QuotaUsageSample(
+                accountID: 2,
+                email: "two@example.com",
+                usedPercent: 30,
+                resetAt: nil,
+                recordedAt: now.addingTimeInterval(-2 * 3_600)
+            ),
+            QuotaUsageSample(
+                accountID: 2,
+                email: "two@example.com",
+                usedPercent: 35,
+                resetAt: nil,
+                recordedAt: now.addingTimeInterval(-3_600)
+            )
+        ]
+        try repository.save(samples)
+        let store = QuotaUsageStore(repository: repository)
+
+        let summary = store.aggregateSummary(duration: 24 * 3_600, now: now)
+        let buckets = store.aggregateBuckets(granularity: .hourly, now: now)
+
+        XCTAssertEqual(summary.usedPercent, 13)
+        XCTAssertEqual(summary.coveredAccounts, 2)
+        XCTAssertEqual(summary.totalAccounts, 2)
+        XCTAssertEqual(buckets.reduce(0) { $0 + $1.usedPercent }, 13)
+    }
+
+    private func quotaSample(used: Double, at date: Date) -> QuotaUsageSample {
+        QuotaUsageSample(
+            accountID: 1,
+            email: "account@example.com",
+            usedPercent: used,
+            resetAt: nil,
+            recordedAt: date
+        )
+    }
+
     @MainActor
     func testWorkDashboardRefreshesHourly() {
         XCTAssertEqual(WorkDurationStore.refreshInterval, 3_600)

@@ -18,6 +18,7 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
     private let store = QuotaStore()
     private let sub2API = Sub2APIServiceManager()
     private let workDurationStore = WorkDurationStore()
+    private let quotaUsageStore = QuotaUsageStore()
     private var statusItem: NSStatusItem?
     private var managerWindow: NSWindow?
     private var cancellables: Set<AnyCancellable> = []
@@ -65,6 +66,11 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _, _, _, _ in self?.updateStatusItem() }
             .store(in: &cancellables)
+
+        sub2API.$managedCodexAccounts
+            .receive(on: RunLoop.main)
+            .sink { [weak self] accounts in self?.quotaUsageStore.record(accounts) }
+            .store(in: &cancellables)
     }
 
     private func updateStatusItem() {
@@ -88,7 +94,8 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
             let content = AgentHubRootView(
                 service: sub2API,
                 quotaStore: store,
-                workStore: workDurationStore
+                workStore: workDurationStore,
+                quotaUsageStore: quotaUsageStore
             )
             let created = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 980, height: 760),

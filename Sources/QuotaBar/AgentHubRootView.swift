@@ -11,6 +11,7 @@ struct AgentHubRootView: View {
     @ObservedObject var service: Sub2APIServiceManager
     @ObservedObject var quotaStore: QuotaStore
     @ObservedObject var workStore: WorkDurationStore
+    @ObservedObject var quotaUsageStore: QuotaUsageStore
     @State private var page: AgentHubPage = .quota
 
     var body: some View {
@@ -35,7 +36,11 @@ struct AgentHubRootView: View {
             case .quota:
                 Sub2APIManagerView(service: service, store: quotaStore)
             case .dashboard:
-                WorkDashboardView(store: workStore)
+                WorkDashboardView(
+                    store: workStore,
+                    quotaUsageStore: quotaUsageStore,
+                    service: service
+                )
             }
         }
         .frame(minWidth: 820, minHeight: 680)

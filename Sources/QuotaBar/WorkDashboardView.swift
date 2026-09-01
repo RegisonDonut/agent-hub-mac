@@ -1,15 +1,20 @@
+import Charts
 import SwiftUI
 
 struct WorkDashboardView: View {
     @ObservedObject var store: WorkDurationStore
+    @ObservedObject var quotaUsageStore: QuotaUsageStore
+    @ObservedObject var service: Sub2APIServiceManager
+    @State private var granularity: QuotaUsageGranularity = .hourly
 
     var body: some View {
         VStack(spacing: 0) {
             toolbar
             Divider()
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 12) {
                     metrics
+                    quotaUsageChart
                     workloadCalendar
 
                     if let error = store.errorMessage {
@@ -18,13 +23,8 @@ struct WorkDashboardView: View {
                             .foregroundStyle(.orange)
                             .textSelection(.enabled)
                     }
-
-                    Text("工作时长按 Codex 每轮任务的开始与结束时间计算；同一会话内的重叠区间只计一次，并发会话分别累加。跨日任务按本机时区拆分到对应日期。")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .padding(20)
+                .padding(14)
             }
         }
         .frame(minWidth: 760, minHeight: 620)
@@ -32,7 +32,7 @@ struct WorkDashboardView: View {
     }
 
     private var toolbar: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Image(systemName: "chart.bar.xaxis")
                 .font(.title3)
                 .foregroundStyle(.green)
@@ -50,55 +50,166 @@ struct WorkDashboardView: View {
                     .foregroundStyle(.secondary)
             }
             Button {
-                Task { await store.refresh() }
+                Task {
+                    await service.refreshManagedCodexAccounts(forceQuotaRefresh: true)
+                    quotaUsageStore.record(service.managedCodexAccounts)
+                    await store.refresh()
+                }
             } label: {
                 Label("刷新", systemImage: "arrow.clockwise")
             }
-            .disabled(store.isRefreshing)
+            .disabled(store.isRefreshing || service.isRefreshingManagedAccounts)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 11)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
     }
 
     private var metrics: some View {
-        HStack(spacing: 12) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 4), spacing: 8) {
             metricCard(
-                title: "最近 24 小时",
-                duration: store.snapshot.last24Hours,
+                title: "过去 24 小时工作时长",
+                value: WorkDurationFormat.compact(store.snapshot.last24Hours),
                 systemImage: "clock"
             )
             metricCard(
-                title: "最近 7 天",
-                duration: store.snapshot.last7Days,
+                title: "过去 7 天工作时长",
+                value: WorkDurationFormat.compact(store.snapshot.last7Days),
                 systemImage: "calendar.badge.clock"
             )
+            quotaMetricCard(title: "过去 24 小时额度消耗", duration: 24 * 3_600)
+            quotaMetricCard(title: "过去 7 天额度消耗", duration: 7 * 24 * 3_600)
         }
     }
 
-    private func metricCard(title: String, duration: TimeInterval, systemImage: String) -> some View {
-        HStack(spacing: 14) {
-            Image(systemName: systemImage)
-                .font(.title2)
-                .foregroundStyle(.green)
-                .frame(width: 38, height: 38)
-                .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 9))
-            VStack(alignment: .leading, spacing: 3) {
+    private func metricCard(
+        title: String,
+        value: String,
+        systemImage: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(spacing: 7) {
+                Image(systemName: systemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.green)
+                    .frame(width: 24, height: 24)
+                    .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
                 Text(title)
-                    .font(.caption)
+                    .font(.caption2.weight(.medium))
                     .foregroundStyle(.secondary)
-                Text(WorkDurationFormat.compact(duration))
-                    .font(.system(size: 25, weight: .semibold, design: .rounded))
-                    .monospacedDigit()
+                    .lineLimit(1)
             }
-            Spacer()
+            Text(value)
+                .font(.system(size: 21, weight: .semibold, design: .rounded))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity)
-        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 12))
+        .padding(11)
+        .frame(maxWidth: .infinity, minHeight: 88, maxHeight: 88, alignment: .leading)
+        .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    @ViewBuilder
+    private func quotaMetricCard(title: String, duration: TimeInterval) -> some View {
+        let summary = quotaUsageStore.aggregateSummary(duration: duration)
+        metricCard(
+            title: title,
+            value: summary.usedPercent.map(QuotaUsageFormat.percent) ?? "—",
+            systemImage: "gauge.with.dots.needle.50percent"
+        )
+    }
+
+    private var quotaUsageChart: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Text("额度使用分布")
+                    .font(.headline)
+                Spacer()
+                Picker("时间粒度", selection: $granularity) {
+                    ForEach(QuotaUsageGranularity.allCases) { option in
+                        Text(option.rawValue).tag(option)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.segmented)
+                .frame(width: 264)
+            }
+
+            if !quotaUsageStore.accounts.isEmpty {
+                let buckets = quotaUsageStore.aggregateBuckets(granularity: granularity)
+                let hasRecordedUsage = buckets.contains { $0.usedPercent > 0 }
+                ZStack {
+                    Chart(buckets) { bucket in
+                        LineMark(
+                            x: .value("时间", bucket.start),
+                            y: .value("额度消耗", bucket.usedPercent)
+                        )
+                        .foregroundStyle(Color.green)
+                        .interpolationMethod(.monotone)
+
+                        PointMark(
+                            x: .value("时间", bucket.start),
+                            y: .value("额度消耗", bucket.usedPercent)
+                        )
+                        .foregroundStyle(Color.green)
+                        .symbolSize(bucket.usedPercent > 0 ? 20 : 8)
+                    }
+                    .chartYAxis {
+                        AxisMarks(position: .leading) { value in
+                            AxisGridLine()
+                            AxisValueLabel {
+                                if let percent = value.as(Double.self) {
+                                    Text(QuotaUsageFormat.axisPercent(percent))
+                                }
+                            }
+                        }
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: .automatic(desiredCount: 7)) { value in
+                            AxisGridLine()
+                            AxisValueLabel(format: granularity == .daily || granularity == .weekly
+                                ? .dateTime.month().day()
+                                : .dateTime.day().hour()
+                            )
+                        }
+                    }
+                    .frame(height: 176)
+
+                    if !hasRecordedUsage {
+                        Text(quotaUsageStore.aggregateSummary(duration: granularity.visibleDuration).coveredAccounts == 0
+                            ? "额度历史正在积累，下一次额度刷新后开始形成曲线"
+                            : "所选时间范围内没有检测到额度变化"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(8)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+
+                Text(granularity.rangeLabel)
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "chart.xyaxis.line")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text("暂无额度历史")
+                        .font(.headline)
+                    Text("额度刷新完成后会自动开始记录")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 176)
+            }
+        }
+        .padding(13)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private var workloadCalendar: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 9) {
             if store.isRefreshing && store.snapshot.calendarDays.isEmpty {
                 HStack {
                     Spacer()
@@ -106,13 +217,13 @@ struct WorkDashboardView: View {
                         .controlSize(.small)
                     Spacer()
                 }
-                .frame(height: 130)
+                .frame(height: 100)
             } else {
                 WorkCalendarView(days: store.snapshot.calendarDays)
             }
         }
-        .padding(16)
-        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 12))
+        .padding(13)
+        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
@@ -121,7 +232,7 @@ private struct WorkCalendarView: View {
     @State private var visibleMonth: Date
 
     private let calendar = Calendar.autoupdatingCurrent
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: 7), count: 7)
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 5), count: 7)
 
     init(days: [WorkDay]) {
         self.days = days
@@ -134,15 +245,10 @@ private struct WorkCalendarView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .center) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("工作量日历")
-                        .font(.title3.bold())
-                    Text("最近一个月 · 悬停日期查看当天有效工作时长")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                Text("工作量日历")
+                    .font(.headline)
                 Spacer()
                 Button { moveMonth(by: -1) } label: {
                     Image(systemName: "chevron.left")
@@ -161,7 +267,7 @@ private struct WorkCalendarView: View {
                 .disabled(!canMoveToNextMonth)
             }
 
-            LazyVGrid(columns: columns, spacing: 7) {
+            LazyVGrid(columns: columns, spacing: 5) {
                 ForEach(Array(calendar.veryShortWeekdaySymbols.enumerated()), id: \.offset) { _, symbol in
                     Text(symbol)
                         .font(.caption2.weight(.medium))
@@ -205,7 +311,7 @@ private struct WorkCalendarView: View {
     }
 
     private func dayCell(_ cell: MonthWorkCell) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack {
                 Text("\(calendar.component(.day, from: cell.date))")
                     .font(.caption.weight(cell.isToday ? .bold : .regular))
@@ -228,11 +334,11 @@ private struct WorkCalendarView: View {
                     .foregroundStyle(.tertiary)
             }
         }
-        .padding(8)
-        .frame(maxWidth: .infinity, minHeight: 58, alignment: .topLeading)
-        .background(dayColor(cell), in: RoundedRectangle(cornerRadius: 7))
+        .padding(6)
+        .frame(maxWidth: .infinity, minHeight: 48, alignment: .topLeading)
+        .background(dayColor(cell), in: RoundedRectangle(cornerRadius: 6))
         .overlay {
-            RoundedRectangle(cornerRadius: 7)
+            RoundedRectangle(cornerRadius: 6)
                 .stroke(cell.isToday ? Color.green.opacity(0.85) : Color.secondary.opacity(0.10))
         }
         .opacity(cell.isInVisibleMonth ? 1 : 0.38)
@@ -295,5 +401,16 @@ enum WorkDurationFormat {
         let minutes = totalMinutes % 60
         if hours > 0 { return minutes > 0 ? "\(hours)时\(minutes)分" : "\(hours)小时" }
         return "\(minutes)分钟"
+    }
+}
+
+enum QuotaUsageFormat {
+    static func percent(_ value: Double) -> String {
+        if value >= 10 || value.rounded() == value { return String(format: "%.0f%%", value) }
+        return String(format: "%.1f%%", value)
+    }
+
+    static func axisPercent(_ value: Double) -> String {
+        value < 1 && value > 0 ? String(format: "%.1f%%", value) : String(format: "%.0f%%", value)
     }
 }

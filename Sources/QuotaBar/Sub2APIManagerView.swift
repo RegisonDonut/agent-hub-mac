@@ -442,9 +442,8 @@ struct Sub2APIManagerView: View {
                 }
                 .frame(maxWidth: 220, alignment: .trailing)
             } else if let used = account.weeklyUsedPercent {
-                VStack(alignment: .trailing, spacing: 2) {
-                    Text("周额度剩余 \(Int(max(0, 100 - used).rounded()))%")
-                        .font(.caption.weight(.medium))
+                VStack(alignment: .trailing, spacing: 4) {
+                    BatteryGauge(remaining: max(0, 100 - used))
                     if let reset = account.weeklyResetAt {
                         Text("\(reset, style: .relative)后重置")
                             .font(.caption2)
