@@ -133,6 +133,7 @@ manifest = {
         "touch-id-session-authorization",
         "agenthub-totp-cli",
         "offline-sub2api-runtime",
+        "sub2api-compliance-onboarding",
     ],
     "signing": {"kind": os.environ["AGENTHUB_SIGNING_KIND"]},
     "fileInventory": file_inventory,

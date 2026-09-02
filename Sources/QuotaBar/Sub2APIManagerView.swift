@@ -84,20 +84,33 @@ struct Sub2APIManagerView: View {
                 routingSection
                 officialCodexSection
 
-                if service.oauthLoginFlow != nil {
+                if service.adminComplianceStatus != nil {
+                    adminComplianceSection
+                } else if service.oauthLoginFlow != nil {
                     oauthFlowSection
                 } else {
                     accountHeader
                 }
 
-                if service.managedCodexAccounts.isEmpty {
-                    emptyState
-                } else {
-                    LazyVStack(spacing: 10) {
-                        ForEach(service.managedCodexAccounts) { account in
-                            managedAccountCard(account)
+                if service.adminComplianceStatus == nil {
+                    if service.managedCodexAccounts.isEmpty {
+                        emptyState
+                    } else {
+                        LazyVStack(spacing: 10) {
+                            ForEach(service.managedCodexAccounts) { account in
+                                managedAccountCard(account)
+                            }
                         }
                     }
+                }
+
+                if service.adminComplianceStatus == nil,
+                   service.oauthLoginFlow == nil,
+                   let message = service.adminComplianceMessage {
+                    Label(message, systemImage: "info.circle")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
 
                 if let message = service.managedAccountsMessage {
@@ -367,6 +380,79 @@ struct Sub2APIManagerView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 12)
                 .stroke(Color.accentColor.opacity(0.28))
+        }
+    }
+
+    @ViewBuilder
+    private var adminComplianceSection: some View {
+        if let status = service.adminComplianceStatus {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack {
+                    Label("确认 Sub2API 合规承诺", systemImage: "exclamationmark.shield.fill")
+                        .font(.title3.bold())
+                        .foregroundStyle(.orange)
+                    Spacer()
+                    Button("取消") { service.cancelAdminCompliance() }
+                        .disabled(service.isAcceptingAdminCompliance)
+                }
+
+                Text("Sub2API 会保存并转发你主动添加的 Codex OAuth 凭据。继续前，请阅读部署与运营合规承诺；AgentHub 不会替你自动接受条款。")
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(spacing: 10) {
+                    Text("版本 \(status.version)")
+                        .font(.caption.monospaced())
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("打开中文文档") { service.openAdminComplianceDocument(language: "zh") }
+                        .disabled(status.documentURLZH == nil)
+                    Button("English") { service.openAdminComplianceDocument(language: "en") }
+                        .disabled(status.documentURLEN == nil)
+                }
+
+                VStack(alignment: .leading, spacing: 7) {
+                    Text("确认短语")
+                        .font(.caption.weight(.semibold))
+                    Text(status.acknowledgementPhraseZH)
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                        .padding(9)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                    TextField("请完整输入上方确认短语", text: $service.adminCompliancePhraseInput)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(service.isAcceptingAdminCompliance)
+                }
+
+                HStack {
+                    if let message = service.adminComplianceMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await service.acceptAdminCompliance() }
+                    } label: {
+                        if service.isAcceptingAdminCompliance {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text("确认并继续添加账号")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(service.isAcceptingAdminCompliance ||
+                        !status.accepts(phrase: service.adminCompliancePhraseInput))
+                }
+            }
+            .padding(16)
+            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color.orange.opacity(0.35))
+            }
         }
     }
 

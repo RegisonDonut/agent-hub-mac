@@ -120,7 +120,7 @@ final class AgentHubTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let info = NSDictionary(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
-        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.11.0")
+        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.11.1")
 
         let packageScript = try String(contentsOf: root.appendingPathComponent("scripts/package-release.sh"))
         XCTAssertTrue(packageScript.contains("verify-release.sh"))
@@ -1175,6 +1175,66 @@ final class AgentHubTests: XCTestCase {
     }
 
     @MainActor
+    func testAdminComplianceStatusRequiresExactExplicitPhrase() throws {
+        let payload: [String: Any] = [
+            "required": true,
+            "version": "v2026.06.10",
+            "document_url_zh": "https://github.com/Wei-Shaw/sub2api/blob/main/docs/legal/admin-compliance.zh.md",
+            "document_url_en": "https://github.com/Wei-Shaw/sub2api/blob/main/docs/legal/admin-compliance.en.md",
+            "ack_phrase_zh": "我已阅读、理解并同意 Sub2API 部署与运营合规承诺",
+            "ack_phrase_en": "I have read, understood, and agree to the Sub2API Deployment and Operation Compliance Commitment"
+        ]
+        let status = try XCTUnwrap(Sub2APIServiceManager.parseAdminComplianceStatus(payload))
+
+        XCTAssertTrue(status.required)
+        XCTAssertEqual(status.version, "v2026.06.10")
+        XCTAssertFalse(status.accepts(phrase: "我同意"))
+        XCTAssertTrue(status.accepts(phrase: "我已阅读、理解并同意 Sub2API 部署与运营合规承诺"))
+        XCTAssertEqual(status.documentURLZH?.host, "github.com")
+    }
+
+    @MainActor
+    func testAdminComplianceStatusRejectsUntrustedDocumentURL() throws {
+        let payload: [String: Any] = [
+            "required": true,
+            "version": "v2026.06.10",
+            "document_url_zh": "https://attacker.example/phishing",
+            "document_url_en": "http://github.com/Wei-Shaw/sub2api/blob/main/docs/legal/admin-compliance.en.md",
+            "ack_phrase_zh": "确认短语",
+            "ack_phrase_en": "Confirmation phrase"
+        ]
+        let status = try XCTUnwrap(Sub2APIServiceManager.parseAdminComplianceStatus(payload))
+
+        XCTAssertNil(status.documentURLZH)
+        XCTAssertNil(status.documentURLEN)
+    }
+
+    func testAdminComplianceHTTP423IsRecognizedWithoutGenericFailure() {
+        let error = Sub2APIRequestError(
+            httpStatus: 423,
+            serverCode: -1,
+            reason: nil,
+            message: "administrator compliance acknowledgement is required"
+        )
+
+        XCTAssertTrue(error.isAdminComplianceRequired)
+        XCTAssertFalse(error.isExpiredOAuthToken)
+    }
+
+    func testManagerIncludesExplicitComplianceConfirmationUI() throws {
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appendingPathComponent("Sources/QuotaBar/Sub2APIManagerView.swift")
+        let source = try String(contentsOf: sourceURL)
+
+        XCTAssertTrue(source.contains("确认 Sub2API 合规承诺"))
+        XCTAssertTrue(source.contains("AgentHub 不会替你自动接受条款"))
+        XCTAssertTrue(source.contains("acceptAdminCompliance"))
+    }
+
+    @MainActor
     func testLiveSub2APIAutoAdminSessionWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTHUB_SUB2API_LIVE_TESTS"] == "1" else {
             throw XCTSkip("Set AGENTHUB_SUB2API_LIVE_TESTS=1 to exercise the local Sub2API login")
@@ -1185,8 +1245,22 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(service.state.isRunning)
         let session = try await service.createAdminSession()
         XCTAssertFalse(session.accessToken.isEmpty)
+
+        await service.beginCodexAccountLogin()
+        if let compliance = service.adminComplianceStatus, compliance.required {
+            XCTAssertNil(service.oauthLoginFlow)
+            XCTAssertTrue(compliance.accepts(
+                phrase: "我已阅读、理解并同意 Sub2API 部署与运营合规承诺"
+            ))
+            service.cancelAdminCompliance()
+            XCTAssertNil(service.adminComplianceStatus)
+            return
+        }
+        XCTAssertNotNil(service.oauthLoginFlow)
+        service.cancelCodexAccountLogin()
+        XCTAssertNil(service.oauthLoginFlow)
+
         await service.refreshManagedCodexAccounts(forceQuotaRefresh: true)
-        XCTAssertFalse(service.managedCodexAccounts.isEmpty)
         for account in service.managedCodexAccounts where account.isEnabled {
             XCTAssertTrue(account.hasVerifiedQuota)
             if service.quotaRefreshErrors[account.id] != nil {
@@ -1196,11 +1270,6 @@ final class AgentHubTests: XCTestCase {
                 XCTAssertFalse(account.isAvailable)
             }
         }
-
-        await service.beginCodexAccountLogin()
-        XCTAssertNotNil(service.oauthLoginFlow)
-        service.cancelCodexAccountLogin()
-        XCTAssertNil(service.oauthLoginFlow)
 
         await service.setCodexRoutingEnabled(false)
         XCTAssertFalse(service.codexRoutingEnabled)
