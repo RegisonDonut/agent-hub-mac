@@ -137,6 +137,7 @@ expected_features = {
     "touch-id-session-authorization",
     "agenthub-totp-cli",
     "offline-sub2api-runtime",
+    "sub2api-compliance-onboarding",
 }
 expected_inventory_files = {
     "Contents/Info.plist",

@@ -117,6 +117,22 @@ struct CodexOAuthLoginFlow: Codable, Equatable {
     var isExpired: Bool { Date().timeIntervalSince(createdAt) >= 30 * 60 }
 }
 
+struct AdminComplianceStatus: Equatable {
+    let required: Bool
+    let version: String
+    let documentURLZH: URL?
+    let documentURLEN: URL?
+    let acknowledgementPhraseZH: String
+    let acknowledgementPhraseEN: String
+
+    func accepts(phrase: String, language: String = "zh") -> Bool {
+        let expected = language.lowercased().hasPrefix("zh")
+            ? acknowledgementPhraseZH
+            : acknowledgementPhraseEN
+        return phrase.trimmingCharacters(in: .whitespacesAndNewlines) == expected
+    }
+}
+
 struct Sub2APIAdminSession {
     let accessToken: String
 }
@@ -136,6 +152,15 @@ struct Sub2APIRequestError: LocalizedError, Equatable {
             .joined(separator: " ")
         return evidence.contains("token_expired")
             || evidence.contains("authentication token is expired")
+    }
+
+    var isAdminComplianceRequired: Bool {
+        guard httpStatus == 423 else { return false }
+        let evidence = [reason, message]
+            .compactMap { $0?.lowercased() }
+            .joined(separator: " ")
+        return evidence.contains("admin_compliance_ack_required")
+            || evidence.contains("compliance acknowledgement is required")
     }
 }
 
@@ -197,6 +222,10 @@ final class Sub2APIServiceManager: ObservableObject {
     @Published private(set) var isStartingOAuthLogin = false
     @Published private(set) var isCompletingOAuthLogin = false
     @Published private(set) var oauthLoginMessage: String?
+    @Published private(set) var adminComplianceStatus: AdminComplianceStatus?
+    @Published var adminCompliancePhraseInput = ""
+    @Published private(set) var isAcceptingAdminCompliance = false
+    @Published private(set) var adminComplianceMessage: String?
 
     let baseURL = URL(string: "http://127.0.0.1:\(hostPort)")!
 
@@ -357,6 +386,8 @@ final class Sub2APIServiceManager: ObservableObject {
             managedAccountsMessage = failedCount == 0
                 ? nil
                 : "有 \(failedCount) 个账号更新失败；继续显示其上次已验证额度"
+        } catch let error as Sub2APIRequestError where error.isAdminComplianceRequired {
+            managedAccountsMessage = "添加 Codex 账号前需要确认 Sub2API 合规承诺"
         } catch {
             managedAccountsMessage = error.localizedDescription
         }
@@ -452,40 +483,132 @@ final class Sub2APIServiceManager: ObservableObject {
     func beginCodexAccountLogin() async {
         guard !isStartingOAuthLogin else { return }
         isStartingOAuthLogin = true
-        oauthLoginMessage = "正在生成官方登录链接…"
+        oauthLoginMessage = nil
+        adminComplianceMessage = "正在检查本地服务合规状态…"
         defer { isStartingOAuthLogin = false }
 
         do {
             guard state.isRunning else {
                 throw QuotaError.processFailed("本地多账号服务尚未运行")
             }
-            guard let result = try await adminAPI(
-                path: "/api/v1/admin/openai/generate-auth-url",
+            let compliance = try await loadAdminComplianceStatus()
+            if compliance.required {
+                adminComplianceStatus = compliance
+                adminCompliancePhraseInput = ""
+                adminComplianceMessage = "添加账号前需要由本机用户确认 Sub2API 合规承诺"
+                return
+            }
+            adminComplianceStatus = nil
+            adminComplianceMessage = nil
+            try await generateCodexOAuthLoginFlow()
+        } catch let error as Sub2APIRequestError where error.isAdminComplianceRequired {
+            await presentAdminComplianceRequirement()
+        } catch {
+            adminComplianceMessage = error.localizedDescription
+        }
+    }
+
+    func acceptAdminCompliance() async {
+        guard let status = adminComplianceStatus,
+              status.required,
+              !isAcceptingAdminCompliance else { return }
+        guard status.accepts(phrase: adminCompliancePhraseInput) else {
+            adminComplianceMessage = "确认短语不匹配，请完整输入上方短语"
+            return
+        }
+
+        isAcceptingAdminCompliance = true
+        adminComplianceMessage = "正在记录本机管理员的明确确认…"
+        defer { isAcceptingAdminCompliance = false }
+
+        do {
+            guard let payload = try await adminAPI(
+                path: "/api/v1/admin/compliance/accept",
                 method: "POST",
-                body: [:]
+                body: [
+                    "phrase": adminCompliancePhraseInput.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "language": "zh"
+                ]
             ) as? [String: Any],
-                  let rawURL = result["auth_url"] as? String,
-                  let authorizationURL = URL(string: rawURL),
-                  let sessionID = result["session_id"] as? String,
-                  let state = URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false)?
-                    .queryItems?.first(where: { $0.name == "state" })?.value,
-                  !state.isEmpty else {
-                throw QuotaError.processFailed("无法生成 Codex 登录链接")
+                  let updated = Self.parseAdminComplianceStatus(payload),
+                  !updated.required else {
+                throw QuotaError.processFailed("本地服务没有确认合规状态，请重试")
             }
 
-            let flow = CodexOAuthLoginFlow(
-                authorizationURL: authorizationURL,
-                sessionID: sessionID,
-                state: state,
-                createdAt: Date()
-            )
-            oauthLoginFlow = flow
-            oauthCallbackInput = ""
-            oauthLoginMessage = "请在浏览器完成登录，再粘贴最终回调链接"
-            try persistOAuthLoginFlow(flow)
+            adminComplianceStatus = nil
+            adminCompliancePhraseInput = ""
+            adminComplianceMessage = nil
+            try await generateCodexOAuthLoginFlow()
+        } catch let error as Sub2APIRequestError where error.isAdminComplianceRequired {
+            await presentAdminComplianceRequirement()
         } catch {
-            oauthLoginMessage = error.localizedDescription
+            adminComplianceMessage = error.localizedDescription
         }
+    }
+
+    func cancelAdminCompliance() {
+        adminComplianceStatus = nil
+        adminCompliancePhraseInput = ""
+        adminComplianceMessage = nil
+    }
+
+    func openAdminComplianceDocument(language: String = "zh") {
+        guard let status = adminComplianceStatus else { return }
+        let url = language.lowercased().hasPrefix("zh")
+            ? status.documentURLZH
+            : status.documentURLEN
+        guard let url else {
+            adminComplianceMessage = "本地服务没有返回可信的合规文档链接"
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    private func loadAdminComplianceStatus() async throws -> AdminComplianceStatus {
+        guard let payload = try await adminAPI(
+            path: "/api/v1/admin/compliance"
+        ) as? [String: Any],
+              let status = Self.parseAdminComplianceStatus(payload) else {
+            throw QuotaError.processFailed("本地服务返回的合规状态不完整")
+        }
+        return status
+    }
+
+    private func presentAdminComplianceRequirement() async {
+        if let status = try? await loadAdminComplianceStatus(), status.required {
+            adminComplianceStatus = status
+            adminCompliancePhraseInput = ""
+        }
+        adminComplianceMessage = "添加账号前需要由本机用户确认 Sub2API 合规承诺"
+    }
+
+    private func generateCodexOAuthLoginFlow() async throws {
+        oauthLoginMessage = "正在生成官方登录链接…"
+        guard let result = try await adminAPI(
+            path: "/api/v1/admin/openai/generate-auth-url",
+            method: "POST",
+            body: [:]
+        ) as? [String: Any],
+              let rawURL = result["auth_url"] as? String,
+              let authorizationURL = URL(string: rawURL),
+              authorizationURL.scheme == "https",
+              let sessionID = result["session_id"] as? String,
+              let state = URLComponents(url: authorizationURL, resolvingAgainstBaseURL: false)?
+                .queryItems?.first(where: { $0.name == "state" })?.value,
+              !state.isEmpty else {
+            throw QuotaError.processFailed("无法生成 Codex 登录链接")
+        }
+
+        let flow = CodexOAuthLoginFlow(
+            authorizationURL: authorizationURL,
+            sessionID: sessionID,
+            state: state,
+            createdAt: Date()
+        )
+        oauthLoginFlow = flow
+        oauthCallbackInput = ""
+        oauthLoginMessage = "请在浏览器完成登录，再粘贴最终回调链接"
+        try persistOAuthLoginFlow(flow)
     }
 
     func copyCodexAuthorizationURL() {
@@ -748,6 +871,34 @@ final class Sub2APIServiceManager: ObservableObject {
 
     static func normalizedEmail(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    static func parseAdminComplianceStatus(_ payload: [String: Any]) -> AdminComplianceStatus? {
+        guard let required = payload["required"] as? Bool,
+              let version = payload["version"] as? String,
+              !version.isEmpty,
+              let phraseZH = payload["ack_phrase_zh"] as? String,
+              !phraseZH.isEmpty,
+              let phraseEN = payload["ack_phrase_en"] as? String,
+              !phraseEN.isEmpty else { return nil }
+
+        func trustedDocumentURL(_ value: Any?) -> URL? {
+            guard let raw = value as? String,
+                  let url = URL(string: raw),
+                  url.scheme == "https",
+                  url.host?.lowercased() == "github.com",
+                  url.path.hasPrefix("/Wei-Shaw/sub2api/") else { return nil }
+            return url
+        }
+
+        return AdminComplianceStatus(
+            required: required,
+            version: version,
+            documentURLZH: trustedDocumentURL(payload["document_url_zh"]),
+            documentURLEN: trustedDocumentURL(payload["document_url_en"]),
+            acknowledgementPhraseZH: phraseZH,
+            acknowledgementPhraseEN: phraseEN
+        )
     }
 
     static func parseManagedQuotaSnapshot(_ payload: [String: Any]) -> ManagedCodexQuotaSnapshot? {
