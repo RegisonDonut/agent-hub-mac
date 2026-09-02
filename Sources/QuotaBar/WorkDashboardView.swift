@@ -6,6 +6,7 @@ struct WorkDashboardView: View {
     @ObservedObject var quotaUsageStore: QuotaUsageStore
     @ObservedObject var service: Sub2APIServiceManager
     @State private var granularity: QuotaUsageGranularity = .hourly
+    @State private var hoveredQuotaBucket: QuotaUsageBucket?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -153,6 +154,12 @@ struct WorkDashboardView: View {
                         )
                         .foregroundStyle(Color.green)
                         .symbolSize(bucket.usedPercent > 0 ? 20 : 8)
+
+                        if let hoveredQuotaBucket {
+                            RuleMark(x: .value("选中时间", hoveredQuotaBucket.start))
+                                .foregroundStyle(.secondary.opacity(0.7))
+                                .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                        }
                     }
                     .chartYAxis {
                         AxisMarks(position: .leading) { value in
@@ -173,7 +180,53 @@ struct WorkDashboardView: View {
                             )
                         }
                     }
+                    .chartYAxisLabel("额度消耗 (%)")
+                    .chartXAxisLabel("时间")
                     .frame(height: 176)
+                    .chartOverlay { proxy in
+                        GeometryReader { geometry in
+                            Rectangle()
+                                .fill(.clear)
+                                .contentShape(Rectangle())
+                                .onContinuousHover { phase in
+                                    switch phase {
+                                    case .active(let location):
+                                        let x = min(max(location.x, 0), geometry.size.width)
+                                        guard let date = proxy.value(atX: x, as: Date.self),
+                                              let nearest = buckets.min(by: {
+                                                  abs($0.start.timeIntervalSince(date)) < abs($1.start.timeIntervalSince(date))
+                                              }) else {
+                                            hoveredQuotaBucket = nil
+                                            return
+                                        }
+                                        hoveredQuotaBucket = nearest
+                                    case .ended:
+                                        hoveredQuotaBucket = nil
+                                    }
+                                }
+                        }
+                    }
+
+                    if let hoveredQuotaBucket {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(hoveredQuotaBucket.start.formatted(date: .abbreviated, time: .shortened))
+                                .font(.caption.weight(.semibold))
+                            Text("消耗 (QuotaUsageFormat.percent(hoveredQuotaBucket.usedPercent))")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 7)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 6)
+                                .stroke(Color.secondary.opacity(0.2))
+                        }
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        .padding(.leading, 42)
+                        .padding(.top, 4)
+                        .allowsHitTesting(false)
+                    }
 
                     if !hasRecordedUsage {
                         Text(quotaUsageStore.aggregateSummary(duration: granularity.visibleDuration).coveredAccounts == 0
@@ -279,7 +332,29 @@ private struct WorkCalendarView: View {
                     dayCell(cell)
                 }
             }
+            calendarLegend
         }
+    }
+
+    private var calendarLegend: some View {
+        HStack(spacing: 5) {
+            Text("少")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            ForEach(0..<5, id: \.self) { level in
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(calendarColor(for: Double(level) / 4))
+                    .frame(width: 14, height: 14)
+            }
+            Text("多")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("按当前月份工作时长分级")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("工作时长颜色图例，从少到多")
     }
 
     private var monthCells: [MonthWorkCell] {
@@ -347,13 +422,18 @@ private struct WorkCalendarView: View {
 
     private func dayColor(_ cell: MonthWorkCell) -> Color {
         guard !cell.isFuture, cell.isInVisibleMonth else { return Color.secondary.opacity(0.06) }
-        switch cell.duration {
-        case ...0: return Color.secondary.opacity(0.10)
-        case ..<3_600: return Color.green.opacity(0.24)
-        case ..<(4 * 3_600): return Color.green.opacity(0.45)
-        case ..<(8 * 3_600): return Color.green.opacity(0.68)
-        default: return Color.green.opacity(0.92)
-        }
+        let maximum = monthCells
+            .filter { $0.isInVisibleMonth && !$0.isFuture }
+            .map(\.duration)
+            .max() ?? 0
+        guard cell.duration > 0, maximum > 0 else { return Color.secondary.opacity(0.10) }
+        let ratio = min(1, cell.duration / maximum)
+        let level = min(4, max(1, Int(ceil(ratio * 4))))
+        return calendarColor(for: Double(level) / 4)
+    }
+
+    private func calendarColor(for intensity: Double) -> Color {
+        Color.green.opacity(0.10 + (0.82 * min(1, max(0, intensity))))
     }
 
     private var canMoveToPreviousMonth: Bool {
