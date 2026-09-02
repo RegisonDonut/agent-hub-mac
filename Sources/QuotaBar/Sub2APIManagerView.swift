@@ -22,7 +22,9 @@ struct Sub2APIManagerView: View {
         .task {
             store.start()
             service.start()
+            await service.startService()
             await store.refresh()
+            await service.refreshComplianceStatus()
             await service.refreshManagedCodexAccounts(forceQuotaRefresh: true)
         }
     }
@@ -82,6 +84,9 @@ struct Sub2APIManagerView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
                 routingSection
+                if service.complianceStatus?.required == true {
+                    complianceSection
+                }
                 officialCodexSection
 
                 if service.oauthLoginFlow != nil {
@@ -281,7 +286,81 @@ struct Sub2APIManagerView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(service.isStartingOAuthLogin)
+            .disabled(service.isStartingOAuthLogin || service.complianceStatus?.required == true)
+        }
+    }
+
+    private var complianceSection: some View {
+        let status = service.complianceStatus
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 9) {
+                Image(systemName: "exclamationmark.shield.fill")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("需要确认 Sub2API 合规承诺")
+                        .font(.headline)
+                    Text("确认前不会读取账号池、创建连接凭据或发起 Codex OAuth。")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                if service.isLoadingCompliance { ProgressView().controlSize(.small) }
+            }
+
+            if let version = status?.version, !version.isEmpty {
+                Text("文档版本 \(version)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+
+            Button {
+                service.openComplianceDocument()
+            } label: {
+                Label("阅读合规承诺全文", systemImage: "doc.text.magnifyingglass")
+            }
+            .buttonStyle(.bordered)
+
+            if let phrase = status?.acknowledgementPhrase, !phrase.isEmpty {
+                Text("阅读后，请逐字输入确认短语：")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(phrase)
+                    .font(.caption.monospaced())
+                    .textSelection(.enabled)
+                    .padding(9)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(.black.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                TextField("输入确认短语", text: $service.compliancePhraseInput)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { Task { await service.acceptCompliance() } }
+                HStack {
+                    if let message = service.complianceMessage {
+                        Text(message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    Spacer()
+                    Button {
+                        Task { await service.acceptCompliance() }
+                    } label: {
+                        if service.isAcceptingCompliance {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Label("确认并继续", systemImage: "checkmark.shield")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(service.isAcceptingCompliance ||
+                        service.compliancePhraseInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+            }
+        }
+        .padding(15)
+        .background(Color.orange.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.orange.opacity(0.35))
         }
     }
 

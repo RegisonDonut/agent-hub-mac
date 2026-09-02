@@ -117,6 +117,21 @@ struct CodexOAuthLoginFlow: Codable, Equatable {
     var isExpired: Bool { Date().timeIntervalSince(createdAt) >= 30 * 60 }
 }
 
+struct Sub2APIComplianceStatus: Equatable {
+    let required: Bool
+    let version: String
+    let documentURLZH: URL?
+    let documentURLEN: URL?
+    let acknowledgementPhraseZH: String
+    let acknowledgementPhraseEN: String
+
+    var acknowledgementPhrase: String {
+        acknowledgementPhraseZH.isEmpty
+            ? acknowledgementPhraseEN
+            : acknowledgementPhraseZH
+    }
+}
+
 struct Sub2APIAdminSession {
     let accessToken: String
 }
@@ -197,6 +212,11 @@ final class Sub2APIServiceManager: ObservableObject {
     @Published private(set) var isStartingOAuthLogin = false
     @Published private(set) var isCompletingOAuthLogin = false
     @Published private(set) var oauthLoginMessage: String?
+    @Published private(set) var complianceStatus: Sub2APIComplianceStatus?
+    @Published private(set) var isLoadingCompliance = false
+    @Published private(set) var isAcceptingCompliance = false
+    @Published var compliancePhraseInput = ""
+    @Published private(set) var complianceMessage: String?
 
     let baseURL = URL(string: "http://127.0.0.1:\(hostPort)")!
 
@@ -314,6 +334,11 @@ final class Sub2APIServiceManager: ObservableObject {
         defer { isRefreshingManagedAccounts = false }
 
         do {
+            let compliance = try await loadComplianceStatus()
+            guard !compliance.required else {
+                managedAccountsMessage = "请先阅读并确认 Sub2API 部署与运营合规承诺"
+                return
+            }
             let previousByID = Dictionary(uniqueKeysWithValues: managedCodexAccounts.map { ($0.id, $0) })
             let freshAccounts = try await loadManagedCodexAccounts()
             let accounts = freshAccounts.map {
@@ -459,6 +484,7 @@ final class Sub2APIServiceManager: ObservableObject {
             guard state.isRunning else {
                 throw QuotaError.processFailed("本地多账号服务尚未运行")
             }
+            try await requireComplianceAcknowledgement()
             guard let result = try await adminAPI(
                 path: "/api/v1/admin/openai/generate-auth-url",
                 method: "POST",
@@ -485,6 +511,73 @@ final class Sub2APIServiceManager: ObservableObject {
             try persistOAuthLoginFlow(flow)
         } catch {
             oauthLoginMessage = error.localizedDescription
+        }
+    }
+
+    func refreshComplianceStatus() async {
+        guard state.isRunning, !isLoadingCompliance else { return }
+        isLoadingCompliance = true
+        defer { isLoadingCompliance = false }
+        do {
+            _ = try await loadComplianceStatus()
+            complianceMessage = nil
+        } catch {
+            complianceMessage = error.localizedDescription
+        }
+    }
+
+    func acceptCompliance() async {
+        guard state.isRunning, !isAcceptingCompliance else { return }
+        let phrase = compliancePhraseInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !phrase.isEmpty else {
+            complianceMessage = "请完整输入确认短语"
+            return
+        }
+        isAcceptingCompliance = true
+        complianceMessage = "正在提交合规确认…"
+        defer { isAcceptingCompliance = false }
+        do {
+            let payload = try await adminAPI(
+                path: "/api/v1/admin/compliance/accept",
+                method: "POST",
+                body: ["phrase": phrase, "language": "zh"]
+            )
+            guard let statusPayload = payload as? [String: Any],
+                  let status = Self.parseComplianceStatus(statusPayload) else {
+                throw QuotaError.processFailed("合规确认响应无效")
+            }
+            complianceStatus = status
+            compliancePhraseInput = ""
+            complianceMessage = status.required
+                ? "确认短语不匹配，请按原文完整输入"
+                : "合规确认已保存"
+            if !status.required {
+                await refreshManagedCodexAccounts()
+            }
+        } catch {
+            complianceMessage = error.localizedDescription
+        }
+    }
+
+    func openComplianceDocument() {
+        let url = complianceStatus?.documentURLZH ?? complianceStatus?.documentURLEN
+        if let url { NSWorkspace.shared.open(url) }
+    }
+
+    private func loadComplianceStatus() async throws -> Sub2APIComplianceStatus {
+        let payload = try await adminAPI(path: "/api/v1/admin/compliance")
+        guard let dictionary = payload as? [String: Any],
+              let status = Self.parseComplianceStatus(dictionary) else {
+            throw QuotaError.processFailed("无法读取 Sub2API 合规状态")
+        }
+        complianceStatus = status
+        return status
+    }
+
+    private func requireComplianceAcknowledgement() async throws {
+        let status = try await loadComplianceStatus()
+        guard !status.required else {
+            throw QuotaError.processFailed("请先阅读并确认 Sub2API 部署与运营合规承诺")
         }
     }
 
@@ -746,6 +839,23 @@ final class Sub2APIServiceManager: ObservableObject {
         return (code, state)
     }
 
+    static func parseComplianceStatus(_ payload: [String: Any]) -> Sub2APIComplianceStatus? {
+        guard let required = payload["required"] as? Bool else { return nil }
+        let version = (payload["version"] as? String) ?? ""
+        func url(_ key: String) -> URL? {
+            guard let value = payload[key] as? String else { return nil }
+            return URL(string: value)
+        }
+        return Sub2APIComplianceStatus(
+            required: required,
+            version: version,
+            documentURLZH: url("document_url_zh"),
+            documentURLEN: url("document_url_en"),
+            acknowledgementPhraseZH: (payload["ack_phrase_zh"] as? String) ?? "",
+            acknowledgementPhraseEN: (payload["ack_phrase_en"] as? String) ?? ""
+        )
+    }
+
     static func normalizedEmail(_ value: String) -> String {
         value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
@@ -913,6 +1023,7 @@ final class Sub2APIServiceManager: ObservableObject {
                 guard state.isRunning else {
                     throw QuotaError.processFailed(state.detail ?? "本地多账号服务启动失败")
                 }
+                try await requireComplianceAcknowledgement()
                 try await configureResilientCodexScheduling()
                 try await prepareCodexRoutingKey()
             }

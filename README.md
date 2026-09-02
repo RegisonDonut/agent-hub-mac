@@ -7,6 +7,7 @@ AgentHub 是一个原生 macOS Codex 管理器，统一管理官方 Codex 登录
 - 状态栏显示 Codex 周额度；多账号线路将所有已启用账号的已验证剩余额度直接累加，可超过 100%
 - 查看 Codex 官方登录账号、周额度和重置时间
 - 在原生界面添加多个 Codex 订阅账号，无需进入 Sub2API 管理后台或手动创建 API Key
+- 首次使用多账号功能时显示 Sub2API 合规承诺原文，用户确认后才允许读取账号池、创建连接凭据或发起 OAuth
 - 有额度账号按剩余额度从高到低排序；0% 账号按最近重置时间排序
 - 新账号添加后立即验证真实额度，未知、失败或耗尽状态不会误标记为可调度
 - 同邮箱重新授权会覆盖原账号凭据并合并重复记录，不会新增重复卡片
@@ -44,6 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 管理窗口包含：
 
 - 当前线路开关
+- Sub2API 合规承诺确认（含原文链接和版本）
 - Codex 官方登录账号与实时额度
 - Codex 多账号池
 - 添加账号和 OAuth 回调流程
@@ -51,7 +53,7 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 - 数据看板中的工作时长指标、工作量日历和单账号额度使用分布
 - 登录时启动、刷新、服务操作和退出
 
-打开“Codex 多账号”开关后，AgentHub 会自动启动本地服务、创建仅供本机使用的内部连接 Key，并把 Codex CLI provider 切换为 `agenthub_multiaccount`；没有账号时可直接继续添加第一个账号。关闭开关会恢复官方 `openai` provider，并检查官方授权：已有授权则直接切回，没有授权才打开 Codex 官方登录页。官方登录凭据和本地账号池都不会被删除。线路切换只对之后创建的 Codex 线程生效；已经打开的线程不会改变 provider。多账号线路内，普通续聊在上下文可重建时可从耗尽账号迁移到可用账号，进行中的工具调用链则需要新建线程。
+打开“Codex 多账号”开关后，AgentHub 会自动启动本地服务；如果 Sub2API 尚未完成当前版本的合规确认，会先显示合规承诺原文和精确确认短语。用户明确确认并提交后，AgentHub 才会读取账号池、创建仅供本机使用的内部连接 Key、发起 OAuth，并把 Codex CLI provider 切换为 `agenthub_multiaccount`；没有账号时可继续添加第一个账号。关闭开关会恢复官方 `openai` provider，并检查官方授权：已有授权则直接切回，没有授权才打开 Codex 官方登录页。官方登录凭据和本地账号池都不会被删除。线路切换只对之后创建的 Codex 线程生效；已经打开的线程不会改变 provider。多账号线路内，普通续聊在上下文可重建时可从耗尽账号迁移到可用账号，进行中的工具调用链则需要新建线程。
 
 App 首次运行会在 `~/.local/bin/codex` 不存在时创建一个指向内置 Codex CLI 的符号链接；不会覆盖用户已经安装的 Codex 命令。
 

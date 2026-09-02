@@ -1175,6 +1175,27 @@ final class AgentHubTests: XCTestCase {
     }
 
     @MainActor
+    func testSub2APIComplianceStatusParsesAcknowledgementPrompt() throws {
+        let status = try XCTUnwrap(Sub2APIServiceManager.parseComplianceStatus([
+            "required": true,
+            "version": "v2026.06.10",
+            "document_url_zh": "https://example.com/compliance.zh.md",
+            "document_url_en": "https://example.com/compliance.en.md",
+            "ack_phrase_zh": "我已阅读、理解并同意 Sub2API 部署与运营合规承诺",
+            "ack_phrase_en": "I have read, understood, and agree"
+        ]))
+        XCTAssertTrue(status.required)
+        XCTAssertEqual(status.version, "v2026.06.10")
+        XCTAssertEqual(status.acknowledgementPhrase, "我已阅读、理解并同意 Sub2API 部署与运营合规承诺")
+        XCTAssertEqual(status.documentURLZH?.absoluteString, "https://example.com/compliance.zh.md")
+    }
+
+    @MainActor
+    func testSub2APIComplianceStatusRejectsIncompletePayload() {
+        XCTAssertNil(Sub2APIServiceManager.parseComplianceStatus(["version": "v2026.06.10"]))
+    }
+
+    @MainActor
     func testLiveSub2APIAutoAdminSessionWhenEnabled() async throws {
         guard ProcessInfo.processInfo.environment["AGENTHUB_SUB2API_LIVE_TESTS"] == "1" else {
             throw XCTSkip("Set AGENTHUB_SUB2API_LIVE_TESTS=1 to exercise the local Sub2API login")

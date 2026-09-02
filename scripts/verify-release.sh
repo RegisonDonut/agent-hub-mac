@@ -132,6 +132,7 @@ info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
 expected_features = {
     "codex-account-management",
     "multi-account-routing",
+    "sub2api-compliance-acknowledgement",
     "quota-and-work-dashboard",
     "totp-manager",
     "touch-id-session-authorization",
