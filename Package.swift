@@ -6,7 +6,8 @@ let package = Package(
     platforms: [.macOS(.v13)],
     products: [
         .executable(name: "AgentHub", targets: ["AgentHub"]),
-        .executable(name: "agenthub-totp", targets: ["AgentHubTOTPCLI"])
+        .executable(name: "agenthub-totp", targets: ["AgentHubTOTPCLI"]),
+        .executable(name: "agenthub-task", targets: ["AgentHubTaskCLI"])
     ],
     targets: [
         .target(
@@ -24,6 +25,10 @@ let package = Package(
             name: "AgentHubTOTPCLI",
             dependencies: ["AgentHubTOTPKit"],
             path: "Sources/AgentHubTOTPCLI"
+        ),
+        .executableTarget(
+            name: "AgentHubTaskCLI",
+            path: "Sources/AgentHubTaskCLI"
         ),
         .testTarget(
             name: "AgentHubTests",

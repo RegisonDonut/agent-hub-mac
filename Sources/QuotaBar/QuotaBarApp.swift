@@ -19,6 +19,7 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
     private let sub2API = Sub2APIServiceManager()
     private let workDurationStore = WorkDurationStore()
     private let quotaUsageStore = QuotaUsageStore()
+    private let observationStore = TaskObservationStore()
     private let totpStore = TOTPStore()
     private var statusItem: NSStatusItem?
     private var managerWindow: NSWindow?
@@ -101,6 +102,7 @@ final class AgentHubAppDelegate: NSObject, NSApplicationDelegate {
                 quotaStore: store,
                 workStore: workDurationStore,
                 quotaUsageStore: quotaUsageStore,
+                observationStore: observationStore,
                 totpStore: totpStore
             )
             let created = NSWindow(

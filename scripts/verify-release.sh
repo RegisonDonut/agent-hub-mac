@@ -95,10 +95,12 @@ test -d "$app_dir" || { echo "Final package does not contain AgentHub.app" >&2; 
 manifest="$app_dir/Contents/Resources/AgentHubRelease.json"
 main_binary="$app_dir/Contents/MacOS/AgentHub"
 totp_binary="$app_dir/Contents/Helpers/agenthub-totp"
+task_binary="$app_dir/Contents/Helpers/agenthub-task"
 runtime_dir="$app_dir/Contents/Resources/BundledRuntime"
 
 codesign --verify --deep --strict "$app_dir"
 codesign --verify --strict "$totp_binary"
+codesign --verify --strict "$task_binary"
 for signed_target in "$app_dir" "$totp_binary"; do
   signature_details="$(codesign -dv --verbose=4 "$signed_target" 2>&1)"
   [[ "$signature_details" == *"Signature=adhoc"* && "$signature_details" == *"TeamIdentifier=not set"* ]] || {
@@ -107,7 +109,7 @@ for signed_target in "$app_dir" "$totp_binary"; do
   }
 done
 
-for binary in "$main_binary" "$totp_binary"; do
+for binary in "$main_binary" "$totp_binary" "$task_binary"; do
   test -x "$binary" || { echo "Missing executable: $binary" >&2; exit 1; }
   archs="$(lipo -archs "$binary")"
   [[ " $archs " == *" arm64 "* && " $archs " == *" x86_64 "* ]] || {
@@ -115,6 +117,7 @@ for binary in "$main_binary" "$totp_binary"; do
     exit 1
   }
 done
+test -x "$task_binary" || { echo "Missing executable: $task_binary" >&2; exit 1; }
 
 test -f "$manifest" || { echo "Missing AgentHubRelease.json" >&2; exit 1; }
 EXPECTED_COMMIT="$expected_commit" APP_DIR="$app_dir" MANIFEST="$manifest" python3 - <<'PY'
@@ -139,11 +142,13 @@ expected_features = {
     "agenthub-totp-cli",
     "offline-sub2api-runtime",
     "sub2api-compliance-onboarding",
+    "task-observation",
 }
 expected_inventory_files = {
     "Contents/Info.plist",
     "Contents/MacOS/AgentHub",
     "Contents/Helpers/agenthub-totp",
+    "Contents/Helpers/agenthub-task",
     "Contents/Resources/BundledRuntime/VERSIONS.txt",
     "Contents/Resources/BundledRuntime/docker-compose.yml",
     "Contents/Resources/BundledRuntime/docker-images-arm64.tar.gz",
@@ -158,6 +163,7 @@ expected_inventory_files = {
 executable_inventory = {
     "Contents/MacOS/AgentHub",
     "Contents/Helpers/agenthub-totp",
+    "Contents/Helpers/agenthub-task",
 }
 generated_files = {
     "Contents/Resources/AgentHubRelease.json",
@@ -236,6 +242,8 @@ PY
 
 help_output="$($totp_binary --help)"
 [[ "$help_output" == *"get-by-label"* ]] || { echo "agenthub-totp help is incomplete" >&2; exit 1; }
+task_help_output="$($task_binary --help 2>&1 || true)"
+[[ "$task_help_output" == *"session-start"* && "$task_help_output" == *"heartbeat"* ]] || { echo "agenthub-task help is incomplete" >&2; exit 1; }
 mkdir -p "$work_dir/home"
 CFFIXED_USER_HOME="$work_dir/home" "$totp_binary" list >/dev/null
 

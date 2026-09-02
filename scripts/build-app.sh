@@ -29,22 +29,26 @@ cd "$project_dir"
 if [[ "$configuration" == "release" ]]; then
   "$swift_bin" build -c release --arch arm64 --arch x86_64
   binary_path=$("$swift_bin" build -c release --arch arm64 --arch x86_64 --show-bin-path)/AgentHub
-  cli_binary_path=$("$swift_bin" build -c release --arch arm64 --arch x86_64 --show-bin-path)/agenthub-totp
+cli_binary_path=$("$swift_bin" build -c release --arch arm64 --arch x86_64 --show-bin-path)/agenthub-totp
+task_binary_path=$("$swift_bin" build -c release --arch arm64 --arch x86_64 --show-bin-path)/agenthub-task
 else
   "$swift_bin" build -c "$configuration"
   binary_path=$("$swift_bin" build -c "$configuration" --show-bin-path)/AgentHub
-  cli_binary_path=$("$swift_bin" build -c "$configuration" --show-bin-path)/agenthub-totp
+cli_binary_path=$("$swift_bin" build -c "$configuration" --show-bin-path)/agenthub-totp
+task_binary_path=$("$swift_bin" build -c "$configuration" --show-bin-path)/agenthub-task
 fi
 
 mkdir -p "$contents_dir/MacOS" "$contents_dir/Resources" "$cli_dir"
 cp "$binary_path" "$contents_dir/MacOS/AgentHub"
 cp "$cli_binary_path" "$cli_dir/agenthub-totp"
+cp "$task_binary_path" "$cli_dir/agenthub-task"
 cp "$project_dir/Resources/Info.plist" "$contents_dir/Info.plist"
 if [[ -d "$project_dir/Resources/BundledRuntime" ]]; then
   ditto "$project_dir/Resources/BundledRuntime" "$contents_dir/Resources/BundledRuntime"
 fi
 chmod +x "$contents_dir/MacOS/AgentHub"
 chmod +x "$cli_dir/agenthub-totp"
+chmod +x "$cli_dir/agenthub-task"
 
 version=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$contents_dir/Info.plist")
 build_number=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$contents_dir/Info.plist")
@@ -94,6 +98,7 @@ contents_dir = manifest_path.parents[1]
 executable_paths = {
     "Contents/MacOS/AgentHub",
     "Contents/Helpers/agenthub-totp",
+    "Contents/Helpers/agenthub-task",
 }
 file_inventory = {}
 for path in sorted(contents_dir.rglob("*")):
@@ -135,6 +140,7 @@ manifest = {
         "agenthub-totp-cli",
         "offline-sub2api-runtime",
         "sub2api-compliance-onboarding",
+        "task-observation",
     ],
     "signing": {"kind": os.environ["AGENTHUB_SIGNING_KIND"]},
     "fileInventory": file_inventory,
@@ -162,6 +168,7 @@ if [[ "$sign_identity" != "-" && "${AGENTHUB_USE_RESTRICTED_ENTITLEMENTS:-0}" ==
   codesign_options+=(--entitlements "$project_dir/Resources/AgentHub.entitlements")
 fi
 codesign "${codesign_options[@]}" "$cli_dir/agenthub-totp"
+codesign "${codesign_options[@]}" "$cli_dir/agenthub-task"
 codesign --deep "${codesign_options[@]}" "$app_dir"
 
 # A build that ships images the compose file never references starts fine on a

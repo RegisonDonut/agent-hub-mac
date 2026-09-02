@@ -21,6 +21,7 @@ AgentHub 是一个原生 macOS Codex 管理器，统一管理官方 Codex 登录
 - 验证码管理器将 TOTP 密钥写入 macOS Keychain；AgentHub UI 与 `agenthub-totp` CLI 在读取前通过 LocalAuthentication 请求 Touch ID 或本机密码
 - `agenthub-totp list` 只列出发行方/账号元数据，`agenthub-totp get-by-label AWS your-account` 通过 Touch ID 后输出一次性验证码供本地 agent 使用
 - 汇总账号池内所有账号的周额度消耗，提供过去 24 小时与 7 天指标，以及 1 小时、4 小时、按天三档额度分布曲线；合计值可超过 100%
+- 任务观测页可登记长时需求与定时任务，汇总最近活跃时间、每日额度消耗、工作时长和触发/Session 数，并展开查看近 14 天明细
 - 多账号模式自动启用高级调度与粘性加权；普通续聊在原账号耗尽且上下文可重建时迁移到可用账号
 - 登录流程和回调输入可跨窗口关闭保留
 - 登录时启动、手动刷新、本地服务重启与退出管理
@@ -98,5 +99,7 @@ open dist/AgentHub.app
 ```
 
 `package-release.sh` 会在最终 ZIP 上重新验证 universal 主程序与 `agenthub-totp`、ad-hoc 代码签名、完整文件清单、release manifest、固定 SHA-256 的双架构 Codex、双架构 Sub2API/PostgreSQL/Redis 离线镜像、第三方许可证，并用 `--pull never` 在隔离 Docker project 中真实启动本机架构的三项服务。全部通过后才会生成 `AgentHub-macOS.zip` 与对应的 `AgentHub-macOS.zip.sha256`。
+
+任务观测 Skill 与命令：在 AgentHub 的“任务观测”页复制 Skill。随 App 提供的 `agenthub-task` 支持 `register`、`session-start`、`heartbeat`、`session-end`，事件保存在 `~/Library/Application Support/AgentHub/task-observations/tasks.jsonl`。较长任务和需求开发类任务应注册，较短 Bug 修复无需注册，定时任务必须注册。
 
 第三方组件版本、许可证和对应源代码地址随 App 保存在 `Contents/Resources/BundledRuntime/`。
