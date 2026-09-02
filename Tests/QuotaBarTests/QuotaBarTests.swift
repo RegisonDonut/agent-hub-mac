@@ -120,7 +120,7 @@ final class AgentHubTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let info = NSDictionary(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
-        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.11.2")
+        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.11.3")
 
         let packageScript = try String(contentsOf: root.appendingPathComponent("scripts/package-release.sh"))
         XCTAssertTrue(packageScript.contains("verify-release.sh"))

@@ -159,11 +159,26 @@ struct WorkDashboardView: View {
                             RuleMark(x: .value("选中时间", hoveredQuotaBucket.start))
                                 .foregroundStyle(.secondary.opacity(0.7))
                                 .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+
+                            PointMark(
+                                x: .value("选中时间", hoveredQuotaBucket.start),
+                                y: .value("选中额度消耗", hoveredQuotaBucket.usedPercent)
+                            )
+                            .foregroundStyle(Color.green)
+                            .symbolSize(72)
+                            .annotation(
+                                position: .top,
+                                alignment: quotaHoverAlignment(hoveredQuotaBucket, in: buckets),
+                                spacing: 8
+                            ) {
+                                quotaHoverLabel(hoveredQuotaBucket)
+                            }
                         }
                     }
                     .chartYAxis {
-                        AxisMarks(position: .leading) { value in
+                        AxisMarks(position: .leading, values: .automatic(desiredCount: 5)) { value in
                             AxisGridLine()
+                            AxisTick()
                             AxisValueLabel {
                                 if let percent = value.as(Double.self) {
                                     Text(QuotaUsageFormat.axisPercent(percent))
@@ -174,14 +189,13 @@ struct WorkDashboardView: View {
                     .chartXAxis {
                         AxisMarks(values: .automatic(desiredCount: 7)) { value in
                             AxisGridLine()
+                            AxisTick()
                             AxisValueLabel(format: granularity == .daily || granularity == .weekly
                                 ? .dateTime.month().day()
                                 : .dateTime.day().hour()
                             )
                         }
                     }
-                    .chartYAxisLabel("额度消耗 (%)")
-                    .chartXAxisLabel("时间")
                     .frame(height: 176)
                     .chartOverlay { proxy in
                         GeometryReader { geometry in
@@ -191,8 +205,12 @@ struct WorkDashboardView: View {
                                 .onContinuousHover { phase in
                                     switch phase {
                                     case .active(let location):
-                                        let x = min(max(location.x, 0), geometry.size.width)
-                                        guard let date = proxy.value(atX: x, as: Date.self),
+                                        let plotRect = geometry[proxy.plotAreaFrame]
+                                        guard plotRect.contains(location),
+                                              let date = proxy.value(
+                                                  atX: location.x - plotRect.origin.x,
+                                                  as: Date.self
+                                              ),
                                               let nearest = buckets.min(by: {
                                                   abs($0.start.timeIntervalSince(date)) < abs($1.start.timeIntervalSince(date))
                                               }) else {
@@ -205,27 +223,6 @@ struct WorkDashboardView: View {
                                     }
                                 }
                         }
-                    }
-
-                    if let hoveredQuotaBucket {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(hoveredQuotaBucket.start.formatted(date: .abbreviated, time: .shortened))
-                                .font(.caption.weight(.semibold))
-                            Text("消耗 (QuotaUsageFormat.percent(hoveredQuotaBucket.usedPercent))")
-                                .font(.caption2.monospacedDigit())
-                                .foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 9)
-                        .padding(.vertical, 7)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 6)
-                                .stroke(Color.secondary.opacity(0.2))
-                        }
-                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-                        .padding(.leading, 42)
-                        .padding(.top, 4)
-                        .allowsHitTesting(false)
                     }
 
                     if !hasRecordedUsage {
@@ -259,6 +256,36 @@ struct WorkDashboardView: View {
         }
         .padding(13)
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func quotaHoverLabel(_ bucket: QuotaUsageBucket) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(verbatim: "时间：" + bucket.start.formatted(date: .abbreviated, time: .shortened))
+                .font(.caption.weight(.semibold))
+            Text(verbatim: "额度消耗：" + QuotaUsageFormat.percent(bucket.usedPercent))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(Color.secondary.opacity(0.2))
+        }
+    }
+
+    private func quotaHoverAlignment(
+        _ bucket: QuotaUsageBucket,
+        in buckets: [QuotaUsageBucket]
+    ) -> Alignment {
+        guard let index = buckets.firstIndex(where: { $0.id == bucket.id }), buckets.count > 1 else {
+            return .leading
+        }
+        let position = Double(index) / Double(buckets.count - 1)
+        if position < 0.2 { return .leading }
+        if position > 0.8 { return .trailing }
+        return .center
     }
 
     private var workloadCalendar: some View {
