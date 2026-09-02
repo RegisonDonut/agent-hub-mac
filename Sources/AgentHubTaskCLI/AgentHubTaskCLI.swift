@@ -35,8 +35,13 @@ struct AgentHubTaskCLI {
         if let sessionID { event["session_id"] = sessionID }
         if quota != 0 { event["quota_percent"] = quota }
         if work != 0 { event["work_seconds"] = work }
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let directory = home.appendingPathComponent("Library/Application Support/AgentHub/task-observations", isDirectory: true)
+        let directory: URL
+        if let override = ProcessInfo.processInfo.environment["AGENTHUB_TASK_DATA_DIR"], !override.isEmpty {
+            directory = URL(fileURLWithPath: override, isDirectory: true)
+        } else {
+            let home = FileManager.default.homeDirectoryForCurrentUser
+            directory = home.appendingPathComponent("Library/Application Support/AgentHub/task-observations", isDirectory: true)
+        }
         let file = directory.appendingPathComponent("tasks.jsonl")
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

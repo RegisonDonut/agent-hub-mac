@@ -25,7 +25,7 @@ struct TaskDailySummary: Identifiable, Equatable, Sendable {
     var id: Date { date }
 }
 
-private struct TaskObservationEvent: Decodable, Sendable {
+struct TaskObservationEvent: Decodable, Sendable {
     let type: String
     let taskID: String
     let taskName: String?
@@ -54,10 +54,12 @@ final class TaskObservationStore: ObservableObject {
     @Published private(set) var errorMessage: String?
 
     private let fileManager: FileManager
+    private let eventsURL: URL?
     private var lifecycleTask: Task<Void, Never>?
 
-    init(fileManager: FileManager = .default) {
+    init(fileManager: FileManager = .default, eventsURL: URL? = nil) {
         self.fileManager = fileManager
+        self.eventsURL = eventsURL
     }
 
     deinit { lifecycleTask?.cancel() }
@@ -89,7 +91,7 @@ final class TaskObservationStore: ObservableObject {
     }
 
     private func loadTasks() async throws -> [ObservedTask] {
-        let url = fileManager.homeDirectoryForCurrentUser
+        let url = eventsURL ?? fileManager.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Application Support/AgentHub/task-observations/tasks.jsonl")
         guard fileManager.fileExists(atPath: url.path) else { return [] }
         let data = try Data(contentsOf: url)
@@ -105,7 +107,7 @@ final class TaskObservationStore: ObservableObject {
         return Self.summarize(events: events, now: Date())
     }
 
-    fileprivate nonisolated static func summarize(events: [TaskObservationEvent], now: Date) -> [ObservedTask] {
+    nonisolated static func summarize(events: [TaskObservationEvent], now: Date) -> [ObservedTask] {
         var grouped: [String: [TaskObservationEvent]] = [:]
         for event in events { grouped[event.taskID, default: []].append(event) }
         let calendar = Calendar.autoupdatingCurrent

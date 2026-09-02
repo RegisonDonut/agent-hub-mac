@@ -2,7 +2,12 @@ import SwiftUI
 
 struct TaskObservationView: View {
     @ObservedObject var store: TaskObservationStore
-    @State private var expandedTaskIDs: Set<String> = []
+    @State private var expandedTaskIDs: Set<String>
+
+    init(store: TaskObservationStore, initiallyExpandedTaskIDs: Set<String> = []) {
+        self.store = store
+        _expandedTaskIDs = State(initialValue: initiallyExpandedTaskIDs)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -101,7 +106,8 @@ struct TaskObservationView: View {
                                 .frame(maxWidth: .infinity)
                             Text(quotaPercent(day.quotaPercent)).frame(width: 58, alignment: .trailing)
                             Text(WorkDurationFormat.compact(day.workDuration)).frame(width: 70, alignment: .trailing)
-                            Text("\(day.sessionCount) 次").frame(width: 46, alignment: .trailing)
+                            Text("Session \(day.sessionCount)").frame(width: 66, alignment: .trailing)
+                            Text("触发 \(day.triggerCount)").frame(width: 54, alignment: .trailing)
                         }
                         .font(.caption2.monospacedDigit())
                     }
@@ -143,8 +149,7 @@ struct TaskObservationView: View {
                     .font(.headline)
                 Spacer()
                 Button {
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(Self.skillText, forType: .string)
+                    Self.copySkill(to: .general)
                 } label: { Label("复制 Skill", systemImage: "doc.on.clipboard") }
             }
             Text("将这段 Markdown 放入本地 Codex Skill 后，任务即可通过 agenthub-task 注册和上报状态。")
@@ -161,7 +166,12 @@ struct TaskObservationView: View {
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private static let skillText = """
+    static func copySkill(to pasteboard: NSPasteboard) {
+        pasteboard.clearContents()
+        pasteboard.setString(skillText, forType: .string)
+    }
+
+    static let skillText = """
 # AgentHub 任务观测规范
 
 较长的任务必须注册；较短的任务（例如修复 Bug）无需注册；需求开发类任务应尽量注册；定时任务必须注册。用户也可以明确要求某个定时任务注册。

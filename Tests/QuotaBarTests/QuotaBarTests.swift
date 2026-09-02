@@ -1,5 +1,6 @@
 import XCTest
 import AppKit
+import SwiftUI
 import Security
 import LocalAuthentication
 @testable import AgentHub
@@ -35,6 +36,76 @@ private final class ContextRecordingAuthorizer: UserPresenceAuthorizer, Authenti
 }
 
 final class AgentHubTests: XCTestCase {
+    @MainActor
+    func testTaskObservationJSONLFlowAggregatesMultipleSessions() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agenthub-observation-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("tasks.jsonl")
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let lines = [
+            #"{"type":"register","task_id":"daily-sync","task_name":"每日同步","timestamp":"\#(timestamp)"}"#,
+            #"{"type":"session_start","task_id":"daily-sync","session_id":"session-a","timestamp":"\#(timestamp)"}"#,
+            #"{"type":"heartbeat","task_id":"daily-sync","session_id":"session-a","quota_percent":1.2,"work_seconds":120,"timestamp":"\#(timestamp)"}"#,
+            #"{"type":"session_end","task_id":"daily-sync","session_id":"session-a","work_seconds":60,"timestamp":"\#(timestamp)"}"#,
+            #"{"type":"session_start","task_id":"daily-sync","session_id":"session-b","timestamp":"\#(timestamp)"}"#,
+            #"{"type":"session_end","task_id":"daily-sync","session_id":"session-b","quota_percent":0.3,"work_seconds":120,"timestamp":"\#(timestamp)"}"#
+        ]
+        try (lines.joined(separator: "\n") + "\n").write(to: file, atomically: true, encoding: .utf8)
+
+        let store = TaskObservationStore(eventsURL: file)
+        await store.refresh()
+        let task = try XCTUnwrap(store.tasks.first)
+        XCTAssertEqual(task.id, "daily-sync")
+        XCTAssertEqual(task.name, "每日同步")
+        XCTAssertEqual(task.sessionCount, 2)
+        XCTAssertEqual(task.totalQuotaPercent, 1.5, accuracy: 0.001)
+        XCTAssertEqual(task.totalWorkDuration, 300, accuracy: 0.001)
+        XCTAssertEqual(task.daily.first?.sessionCount, 2)
+        XCTAssertEqual(task.daily.first?.triggerCount, 3)
+    }
+
+    @MainActor
+    func testTaskObservationViewRendersRegisteredTask() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("agenthub-observation-render-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let file = directory.appendingPathComponent("tasks.jsonl")
+        let timestamp = ISO8601DateFormatter().string(from: Date())
+        let json = #"{"type":"register","task_id":"render-test","task_name":"观测页面验收任务","timestamp":"\#(timestamp)"}"# + "\n"
+            + #"{"type":"session_start","task_id":"render-test","session_id":"session-1","timestamp":"\#(timestamp)"}"# + "\n"
+            + #"{"type":"heartbeat","task_id":"render-test","session_id":"session-1","quota_percent":2.4,"work_seconds":180,"timestamp":"\#(timestamp)"}"# + "\n"
+        try json.write(to: file, atomically: true, encoding: .utf8)
+        let store = TaskObservationStore(eventsURL: file)
+        await store.refresh()
+
+        let root = TaskObservationView(store: store, initiallyExpandedTaskIDs: ["render-test"])
+            .frame(width: 980, height: 760)
+            .background(Color(nsColor: .windowBackgroundColor))
+        let hosting = NSHostingView(rootView: root)
+        hosting.appearance = NSAppearance(named: .aqua)
+        hosting.frame = NSRect(x: 0, y: 0, width: 980, height: 760)
+        hosting.layoutSubtreeIfNeeded()
+        let representation = try XCTUnwrap(hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds))
+        hosting.cacheDisplay(in: hosting.bounds, to: representation)
+        let png = try XCTUnwrap(representation.representation(using: .png, properties: [:]))
+        XCTAssertGreaterThan(png.count, 10_000)
+        try png.write(to: URL(fileURLWithPath: "/tmp/agenthub-task-observation-render.png"), options: .atomic)
+    }
+
+    @MainActor
+    func testTaskObservationSkillCopiesCompleteRegistrationRules() throws {
+        let pasteboard = NSPasteboard(name: NSPasteboard.Name("agenthub-task-observation-test"))
+        TaskObservationView.copySkill(to: pasteboard)
+        let copied = try XCTUnwrap(pasteboard.string(forType: .string))
+        XCTAssertTrue(copied.contains("较长的任务必须注册"))
+        XCTAssertTrue(copied.contains("较短的任务（例如修复 Bug）无需注册"))
+        XCTAssertTrue(copied.contains("需求开发类任务应尽量注册"))
+        XCTAssertTrue(copied.contains("定时任务必须注册"))
+        XCTAssertTrue(copied.contains("agenthub-task session-start"))
+        XCTAssertTrue(copied.contains("一个任务 ID 可以对应多个 Codex Session"))
+    }
+
     func testTOTPDeleteConfirmationRequiresExactPhrase() {
         XCTAssertFalse(TOTPDeleteConfirmation.isValid(input: ""))
         XCTAssertFalse(TOTPDeleteConfirmation.isValid(input: "删除"))
@@ -120,7 +191,7 @@ final class AgentHubTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let info = NSDictionary(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
-        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.12.0")
+        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.12.1")
 
         let packageScript = try String(contentsOf: root.appendingPathComponent("scripts/package-release.sh"))
         XCTAssertTrue(packageScript.contains("verify-release.sh"))
