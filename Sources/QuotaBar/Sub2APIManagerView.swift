@@ -22,7 +22,9 @@ struct Sub2APIManagerView: View {
         .task {
             store.start()
             service.start()
+            await service.startService()
             await store.refresh()
+            await service.refreshAdminComplianceStatus()
             await service.refreshManagedCodexAccounts(forceQuotaRefresh: true)
         }
     }
@@ -294,7 +296,7 @@ struct Sub2APIManagerView: View {
                 }
             }
             .buttonStyle(.borderedProminent)
-            .disabled(service.isStartingOAuthLogin)
+            .disabled(service.isStartingOAuthLogin || service.adminComplianceStatus?.required == true)
         }
     }
 
