@@ -72,9 +72,12 @@ final class AgentHubTests: XCTestCase {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let file = directory.appendingPathComponent("tasks.jsonl")
         let timestamp = ISO8601DateFormatter().string(from: Date())
+        let yesterday = ISO8601DateFormatter().string(from: Date().addingTimeInterval(-24 * 3600))
         let json = #"{"type":"register","task_id":"render-test","task_name":"观测页面验收任务","timestamp":"\#(timestamp)"}"# + "\n"
             + #"{"type":"session_start","task_id":"render-test","session_id":"session-1","timestamp":"\#(timestamp)"}"# + "\n"
             + #"{"type":"heartbeat","task_id":"render-test","session_id":"session-1","quota_percent":2.4,"work_seconds":180,"timestamp":"\#(timestamp)"}"# + "\n"
+            + #"{"type":"session_start","task_id":"render-test","session_id":"session-0","timestamp":"\#(yesterday)"}"# + "\n"
+            + #"{"type":"heartbeat","task_id":"render-test","session_id":"session-0","quota_percent":0.8,"work_seconds":60,"timestamp":"\#(yesterday)"}"# + "\n"
         try json.write(to: file, atomically: true, encoding: .utf8)
         let store = TaskObservationStore(eventsURL: file)
         await store.refresh()
@@ -191,7 +194,7 @@ final class AgentHubTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let info = NSDictionary(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
-        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.12.1")
+        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.13.0")
 
         let packageScript = try String(contentsOf: root.appendingPathComponent("scripts/package-release.sh"))
         XCTAssertTrue(packageScript.contains("verify-release.sh"))

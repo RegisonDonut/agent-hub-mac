@@ -1,12 +1,13 @@
+import Charts
 import SwiftUI
 
 struct TaskObservationView: View {
     @ObservedObject var store: TaskObservationStore
-    @State private var expandedTaskIDs: Set<String>
+    @State private var expandedTaskID: String?
 
     init(store: TaskObservationStore, initiallyExpandedTaskIDs: Set<String> = []) {
         self.store = store
-        _expandedTaskIDs = State(initialValue: initiallyExpandedTaskIDs)
+        _expandedTaskID = State(initialValue: initiallyExpandedTaskIDs.first)
     }
 
     var body: some View {
@@ -73,10 +74,10 @@ struct TaskObservationView: View {
     }
 
     private func taskRow(_ task: ObservedTask) -> some View {
-        let expanded = expandedTaskIDs.contains(task.id)
+        let expanded = expandedTaskID == task.id
         return VStack(alignment: .leading, spacing: 0) {
             Button {
-                if expanded { expandedTaskIDs.remove(task.id) } else { expandedTaskIDs.insert(task.id) }
+                expandedTaskID = expanded ? nil : task.id
             } label: {
                 HStack(spacing: 10) {
                     Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.caption.weight(.bold)).frame(width: 12)
@@ -94,30 +95,117 @@ struct TaskObservationView: View {
             }
             .buttonStyle(.plain)
             .padding(11)
-            if expanded {
-                Divider().padding(.leading, 30)
-                VStack(alignment: .leading, spacing: 5) {
-                    Text("最近 14 天").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                    ForEach(task.daily) { day in
-                        HStack(spacing: 8) {
-                            Text(day.date.formatted(.dateTime.month().day())).frame(width: 48, alignment: .leading)
-                            ProgressView(value: min(1, day.quotaPercent / 100))
-                                .tint(day.quotaPercent > 0 ? .green : .secondary)
-                                .frame(maxWidth: .infinity)
-                            Text(quotaPercent(day.quotaPercent)).frame(width: 58, alignment: .trailing)
-                            Text(WorkDurationFormat.compact(day.workDuration)).frame(width: 70, alignment: .trailing)
-                            Text("Session \(day.sessionCount)").frame(width: 66, alignment: .trailing)
-                            Text("触发 \(day.triggerCount)").frame(width: 54, alignment: .trailing)
-                        }
-                        .font(.caption2.monospacedDigit())
-                    }
-                }
-                .padding(.horizontal, 42)
-                .padding(.vertical, 9)
-                .background(.black.opacity(0.03))
-            }
+            if expanded { TaskTrendChart(task: task).padding(.horizontal, 18).padding(.vertical, 12) }
         }
         .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private struct TaskTrendChart: View {
+        let task: ObservedTask
+        @State private var hoveredDate: Date?
+
+        private var points: [TrendPoint] {
+            let days = task.daily.sorted { $0.date < $1.date }
+            let quotaMax = max(days.map(\.quotaPercent).max() ?? 0, 0.001)
+            let workMax = max(days.map(\.workDuration).max() ?? 0, 1)
+            let sessionsMax = max(days.map(\.sessionCount).max() ?? 0, 1)
+            return days.flatMap { day in
+                [
+                    TrendPoint(date: day.date, metric: "额度消耗", normalized: day.quotaPercent / quotaMax * 100, raw: quotaPercent(day.quotaPercent), color: .green),
+                    TrendPoint(date: day.date, metric: "工作时间", normalized: day.workDuration / workMax * 100, raw: WorkDurationFormat.compact(day.workDuration), color: .blue),
+                    TrendPoint(date: day.date, metric: "Sessions", normalized: Double(day.sessionCount) / Double(sessionsMax) * 100, raw: "\(day.sessionCount) 次", color: .orange)
+                ]
+            }
+        }
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("近 14 天活动趋势").font(.subheadline.weight(.semibold))
+                        Text("纵轴：相对强度（该任务 14 天峰值 = 100） · 横轴：日期")
+                            .font(.caption2).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    HStack(spacing: 10) {
+                        legend("额度消耗", color: .green)
+                        legend("工作时间", color: .blue)
+                        legend("Sessions", color: .orange)
+                    }
+                }
+                Chart(points) { point in
+                    LineMark(x: .value("日期", point.date), y: .value("相对强度", point.normalized))
+                        .foregroundStyle(by: .value("指标", point.metric))
+                        .interpolationMethod(.monotone)
+                    if let hoveredDate, Calendar.autoupdatingCurrent.isDate(point.date, inSameDayAs: hoveredDate) {
+                        PointMark(x: .value("日期", point.date), y: .value("相对强度", point.normalized))
+                            .foregroundStyle(point.color).symbolSize(52)
+                    }
+                }
+                .chartForegroundStyleScale(["额度消耗": Color.green, "工作时间": Color.blue, "Sessions": Color.orange])
+                .chartYScale(domain: 0...100)
+                .chartYAxis {
+                    AxisMarks(values: [0, 25, 50, 75, 100]) { value in
+                        AxisGridLine()
+                        AxisValueLabel { if let v = value.as(Double.self) { Text("\(Int(v))") } }
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks(values: .automatic(desiredCount: 7)) { value in
+                        AxisGridLine()
+                        AxisValueLabel(format: .dateTime.month().day())
+                    }
+                }
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        Rectangle().fill(.clear).contentShape(Rectangle()).onContinuousHover { phase in
+                            guard case .active(let location) = phase else { hoveredDate = nil; return }
+                            let plot = geometry[proxy.plotAreaFrame]
+                            guard plot.contains(location), let date = proxy.value(atX: location.x - plot.origin.x, as: Date.self) else { hoveredDate = nil; return }
+                            hoveredDate = date
+                        }
+                    }
+                }
+                .chartOverlay { proxy in
+                    GeometryReader { geometry in
+                        if let hoveredDate,
+                           let day = task.daily.first(where: { Calendar.autoupdatingCurrent.isDate($0.date, inSameDayAs: hoveredDate) }) {
+                            let plot = geometry[proxy.plotAreaFrame]
+                            if let x = proxy.position(forX: day.date) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(day.date.formatted(date: .abbreviated, time: .omitted)).font(.caption.weight(.semibold))
+                                    Text("额度 \(quotaPercent(day.quotaPercent)) · 工作 \(WorkDurationFormat.compact(day.workDuration)) · Sessions \(day.sessionCount)")
+                                        .font(.caption2.monospacedDigit())
+                                    Text("触发 \(day.triggerCount)").font(.caption2.monospacedDigit()).foregroundStyle(.secondary)
+                                }
+                                .padding(7)
+                                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                                .overlay { RoundedRectangle(cornerRadius: 6).stroke(Color.secondary.opacity(0.2)) }
+                                .position(x: min(max(plot.origin.x + x, 100), geometry.size.width - 100), y: max(42, plot.origin.y + 20))
+                            }
+                        }
+                    }
+                }
+                .frame(height: 220)
+            }
+        }
+
+        private func legend(_ text: String, color: Color) -> some View {
+            Label(text, systemImage: "circle.fill").font(.caption2).foregroundStyle(color)
+        }
+
+        private func quotaPercent(_ value: Double) -> String {
+            "\(value.formatted(.number.precision(.fractionLength(1))))%"
+        }
+    }
+
+    private struct TrendPoint: Identifiable {
+        let date: Date
+        let metric: String
+        let normalized: Double
+        let raw: String
+        let color: Color
+        var id: String { "\(date.timeIntervalSince1970)-\(metric)" }
     }
 
     private func taskStat(_ title: String, _ value: String) -> some View {
