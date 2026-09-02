@@ -57,7 +57,18 @@ source_dirty=false
 if [[ -n "$(git -C "$project_dir" status --porcelain)" ]]; then
   source_dirty=true
 fi
-sign_identity="${AGENTHUB_CODESIGN_IDENTITY:--}"
+# Reuse the team's long-lived local signing certificate when it is present.
+# This keeps the designated requirement stable across upgrades. CI and clean
+# machines fall back to ad-hoc signing until a Developer ID certificate is
+# supplied explicitly via AGENTHUB_CODESIGN_IDENTITY.
+sign_identity="${AGENTHUB_CODESIGN_IDENTITY:-}"
+if [[ -z "$sign_identity" ]]; then
+  if security find-certificate -a -c "Speech2Text" "$HOME/Library/Keychains/login.keychain-db" >/dev/null 2>&1; then
+    sign_identity="Speech2Text"
+  else
+    sign_identity="-"
+  fi
+fi
 signing_kind="certificate"
 if [[ "$sign_identity" == "-" ]]; then
   signing_kind="adhoc"
@@ -70,6 +81,7 @@ AGENTHUB_BUILD_NUMBER="$build_number" \
 AGENTHUB_SOURCE_COMMIT="$source_commit" \
 AGENTHUB_SOURCE_DIRTY="$source_dirty" \
 AGENTHUB_SIGNING_KIND="$signing_kind" \
+AGENTHUB_SIGNING_IDENTITY="$sign_identity" \
 python3 - <<'PY'
 import datetime
 import hashlib
@@ -142,7 +154,10 @@ manifest = {
         "sub2api-compliance-onboarding",
         "task-observation",
     ],
-    "signing": {"kind": os.environ["AGENTHUB_SIGNING_KIND"]},
+    "signing": {
+        "kind": os.environ["AGENTHUB_SIGNING_KIND"],
+        "identity": os.environ["AGENTHUB_SIGNING_IDENTITY"],
+    },
     "fileInventory": file_inventory,
     "runtime": {
         "codex": versions.get("OpenAI Codex CLI"),

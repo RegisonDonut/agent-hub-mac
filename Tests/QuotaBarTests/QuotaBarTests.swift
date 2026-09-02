@@ -194,7 +194,7 @@ final class AgentHubTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let info = NSDictionary(contentsOf: root.appendingPathComponent("Resources/Info.plist"))
-        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.13.0")
+        XCTAssertEqual(info?["CFBundleShortVersionString"] as? String, "1.13.1")
 
         let packageScript = try String(contentsOf: root.appendingPathComponent("scripts/package-release.sh"))
         XCTAssertTrue(packageScript.contains("verify-release.sh"))
@@ -216,16 +216,24 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(verifyScript.contains("signing"))
         XCTAssertTrue(verifyScript.contains("AppleDouble sidecar"))
 
+        let buildScript = try String(contentsOf: root.appendingPathComponent("scripts/build-app.sh"))
+        XCTAssertTrue(buildScript.contains("AGENTHUB_CODESIGN_IDENTITY"))
+        XCTAssertTrue(buildScript.contains("Speech2Text"))
+        XCTAssertTrue(buildScript.contains("AGENTHUB_SIGNING_IDENTITY"))
+        XCTAssertTrue(verifyScript.contains("Authority={identity}"))
+
         let installScript = try String(contentsOf: root.appendingPathComponent("scripts/install.sh"))
         XCTAssertTrue(installScript.contains("AgentHub-macOS.zip.sha256"))
         XCTAssertTrue(installScript.contains("shasum -a 256 -c"))
         XCTAssertTrue(installScript.contains("codesign --verify --deep --strict"))
         XCTAssertFalse(installScript.contains("xattr -dr com.apple.quarantine"))
-        XCTAssertTrue(installScript.contains("ad-hoc"))
+        XCTAssertTrue(installScript.contains("固定的签名身份"))
+        XCTAssertTrue(installScript.contains("Apple Developer ID"))
         XCTAssertTrue(installScript.contains("xattr -w com.apple.quarantine"))
 
         let readme = try String(contentsOf: root.appendingPathComponent("README.md"))
-        XCTAssertTrue(readme.contains("ad-hoc"))
+        XCTAssertTrue(readme.contains("com.regisondonut.AgentHub"))
+        XCTAssertTrue(readme.contains("Speech2Text"))
 
         let verifyBundleScript = try String(contentsOf: root.appendingPathComponent("scripts/verify-bundle.sh"))
         XCTAssertTrue(verifyBundleScript.contains("f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963"))
@@ -233,7 +241,7 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(verifyBundleScript.contains("archive carries unused images"))
         XCTAssertTrue(verifyBundleScript.contains("untagged image entry"))
         XCTAssertTrue(verifyBundleScript.contains("config blob missing or too large"))
-        XCTAssertTrue(verifyScript.contains("for signed_target in"))
+        XCTAssertTrue(verifyScript.contains("Contents/Helpers/agenthub-task"))
     }
 
     func testTOTPCycleCountdownUsesConfiguredPeriod() {

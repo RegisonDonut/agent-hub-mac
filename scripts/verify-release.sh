@@ -101,13 +101,6 @@ runtime_dir="$app_dir/Contents/Resources/BundledRuntime"
 codesign --verify --deep --strict "$app_dir"
 codesign --verify --strict "$totp_binary"
 codesign --verify --strict "$task_binary"
-for signed_target in "$app_dir" "$totp_binary"; do
-  signature_details="$(codesign -dv --verbose=4 "$signed_target" 2>&1)"
-  [[ "$signature_details" == *"Signature=adhoc"* && "$signature_details" == *"TeamIdentifier=not set"* ]] || {
-    echo "Release signature does not match manifest requirement for $signed_target: expected ad-hoc with no TeamIdentifier" >&2
-    exit 1
-  }
-done
 
 for binary in "$main_binary" "$totp_binary" "$task_binary"; do
   test -x "$binary" || { echo "Missing executable: $binary" >&2; exit 1; }
@@ -127,6 +120,7 @@ import os
 import plistlib
 import re
 import stat
+import subprocess
 from pathlib import Path
 
 app = Path(os.environ["APP_DIR"])
@@ -177,8 +171,29 @@ if manifest.get("buildNumber") != info.get("CFBundleVersion"):
     raise SystemExit("release manifest build number mismatch")
 if set(manifest.get("features") or []) != expected_features:
     raise SystemExit("release manifest feature inventory mismatch")
-if manifest.get("signing") != {"kind": "adhoc"}:
+signing = manifest.get("signing")
+if not isinstance(signing, dict) or signing.get("kind") not in {"adhoc", "certificate"}:
     raise SystemExit("release manifest signing requirement mismatch")
+identity = signing.get("identity")
+if not isinstance(identity, str) or not identity:
+    raise SystemExit("release manifest signing identity is missing")
+
+# Verify every executable uses the identity recorded before signing. A
+# certificate-backed identity may be self-signed (stable locally but not
+# trusted by Gatekeeper); Apple Developer ID plus notarization is still needed
+# for a warning-free public download.
+for relative in ("Contents/MacOS/AgentHub", "Contents/Helpers/agenthub-totp", "Contents/Helpers/agenthub-task"):
+    target = app / relative
+    details = subprocess.run(["codesign", "-dv", "--verbose=4", str(target)], capture_output=True, text=True)
+    text = (details.stdout or "") + (details.stderr or "")
+    if details.returncode != 0:
+        raise SystemExit(f"could not inspect signature for {relative}")
+    if signing["kind"] == "adhoc":
+        if "Signature=adhoc" not in text or "TeamIdentifier=not set" not in text:
+            raise SystemExit(f"release signature does not match ad-hoc manifest for {relative}")
+    else:
+        if "Signature=adhoc" in text or f"Authority={identity}" not in text:
+            raise SystemExit(f"release signature does not match certificate manifest for {relative}")
 if manifest.get("sourceDirty"):
     raise SystemExit("release manifest was built from a dirty worktree")
 expected_commit = os.environ.get("EXPECTED_COMMIT")

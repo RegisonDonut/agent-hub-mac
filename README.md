@@ -37,7 +37,7 @@ curl -fsSL https://raw.githubusercontent.com/RegisonDonut/agent-hub-mac/main/scr
 
 也可以从 [Releases](https://github.com/RegisonDonut/agent-hub-mac/releases/latest) 下载 Universal Binary 安装包。
 
-当前团队安装包采用 **ad-hoc 签名**，没有 Apple Developer ID，也未经过 Apple 公证。安装脚本会确保 App 带有 macOS quarantine，且不会绕过 Gatekeeper；请只使用 `RegisonDonut/agent-hub-mac` 官方 Release 或上面的官方安装脚本。首次打开被拦截时，请按团队批准的流程在 Finder 中手动“打开”，不要执行移除 quarantine 属性的命令。
+AgentHub 的 Bundle ID 固定为 `com.regisondonut.AgentHub`。构建机存在团队的 `Speech2Text` 证书时，安装包会复用该固定签名身份；没有证书时才回退为 **ad-hoc 签名**。固定身份可让 macOS 将升级识别为同一款 App，但自签名证书仍不是 Apple Developer ID，也未经过 Apple 公证，不能保证跳过 Gatekeeper 的首次打开确认。要获得无警告的公开下载，需要 Developer ID Application 证书、公证和 stapler 票据。安装脚本会保留 macOS quarantine；请只使用 `RegisonDonut/agent-hub-mac` 官方 Release，并在首次被拦截时从 Finder 手动“打开”，不要移除 quarantine 属性。
 
 ## 使用
 
@@ -98,7 +98,7 @@ open dist/AgentHub.app
 ./scripts/package-release.sh
 ```
 
-`package-release.sh` 会在最终 ZIP 上重新验证 universal 主程序与 `agenthub-totp`、ad-hoc 代码签名、完整文件清单、release manifest、固定 SHA-256 的双架构 Codex、双架构 Sub2API/PostgreSQL/Redis 离线镜像、第三方许可证，并用 `--pull never` 在隔离 Docker project 中真实启动本机架构的三项服务。全部通过后才会生成 `AgentHub-macOS.zip` 与对应的 `AgentHub-macOS.zip.sha256`。
+`package-release.sh` 会在最终 ZIP 上重新验证 universal 主程序与两个 CLI、release manifest 声明的代码签名身份、完整文件清单、固定 SHA-256 的双架构 Codex、双架构 Sub2API/PostgreSQL/Redis 离线镜像、第三方许可证，并用 `--pull never` 在隔离 Docker project 中真实启动本机架构的三项服务。全部通过后才会生成 `AgentHub-macOS.zip` 与对应的 `AgentHub-macOS.zip.sha256`。
 
 任务观测 Skill 与命令：在 AgentHub 的“任务观测”页复制 Skill。随 App 提供的 `agenthub-task` 支持 `register`、`session-start`、`heartbeat`、`session-end`，事件保存在 `~/Library/Application Support/AgentHub/task-observations/tasks.jsonl`。较长任务和需求开发类任务应注册，较短 Bug 修复无需注册，定时任务必须注册。
 
