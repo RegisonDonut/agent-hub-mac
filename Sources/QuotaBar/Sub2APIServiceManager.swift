@@ -268,6 +268,7 @@ final class Sub2APIServiceManager: ObservableObject {
         lifecycleTask = Task { [weak self] in
             guard let self else { return }
             await startService()
+            await refreshAdminComplianceStatus()
             var nextQuotaRefreshAt = Date().addingTimeInterval(Self.managedQuotaRefreshInterval)
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 60 * 1_000_000_000)
@@ -343,6 +344,13 @@ final class Sub2APIServiceManager: ObservableObject {
         defer { isRefreshingManagedAccounts = false }
 
         do {
+            let compliance = try await loadAdminComplianceStatus()
+            guard !compliance.required else {
+                adminComplianceStatus = compliance
+                adminCompliancePhraseInput = ""
+                managedAccountsMessage = "请先阅读并确认 Sub2API 部署与运营合规承诺"
+                return
+            }
             let previousByID = Dictionary(uniqueKeysWithValues: managedCodexAccounts.map { ($0.id, $0) })
             let freshAccounts = try await loadManagedCodexAccounts()
             let accounts = freshAccounts.map {
@@ -538,6 +546,7 @@ final class Sub2APIServiceManager: ObservableObject {
             adminComplianceStatus = nil
             adminCompliancePhraseInput = ""
             adminComplianceMessage = nil
+            await refreshManagedCodexAccounts()
             try await generateCodexOAuthLoginFlow()
         } catch let error as Sub2APIRequestError where error.isAdminComplianceRequired {
             await presentAdminComplianceRequirement()
@@ -571,7 +580,20 @@ final class Sub2APIServiceManager: ObservableObject {
               let status = Self.parseAdminComplianceStatus(payload) else {
             throw QuotaError.processFailed("本地服务返回的合规状态不完整")
         }
+        adminComplianceStatus = status.required ? status : nil
         return status
+    }
+
+    func refreshAdminComplianceStatus() async {
+        guard state.isRunning else { return }
+        do {
+            let status = try await loadAdminComplianceStatus()
+            adminComplianceMessage = status.required
+                ? "添加账号前需要由本机用户确认 Sub2API 合规承诺"
+                : nil
+        } catch {
+            adminComplianceMessage = error.localizedDescription
+        }
     }
 
     private func presentAdminComplianceRequirement() async {
@@ -1063,6 +1085,12 @@ final class Sub2APIServiceManager: ObservableObject {
                 if !state.isRunning { await startService() }
                 guard state.isRunning else {
                     throw QuotaError.processFailed(state.detail ?? "本地多账号服务启动失败")
+                }
+                let compliance = try await loadAdminComplianceStatus()
+                guard !compliance.required else {
+                    adminComplianceStatus = compliance
+                    adminCompliancePhraseInput = ""
+                    throw QuotaError.processFailed("请先阅读并确认 Sub2API 部署与运营合规承诺")
                 }
                 try await configureResilientCodexScheduling()
                 try await prepareCodexRoutingKey()
