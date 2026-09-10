@@ -14,7 +14,7 @@ AgentHub 是一个原生 macOS Codex 管理器，统一管理官方 Codex 登录
 - 额度接口遇到过期 access token 时会先刷新凭据再重试；无法刷新时明确提示重新授权
 - 一键在“Codex 多账号”与“Codex 官方登录”线路之间切换
 - 开启多账号时自动启动 Sub2API、创建内部 Key 并写入 Codex provider；关闭时自动检查并发起官方授权
-- 完整安装包内置 Codex CLI 0.149.0 与 Sub2API/PostgreSQL/Redis 离线镜像，无需首次下载服务镜像
+- 完整安装包内置 Codex CLI 0.153.4 与 Sub2API/PostgreSQL/Redis 离线镜像，无需首次下载服务镜像
 - 优先使用用户已经安装的 Codex CLI；只有本机没有 Codex 时才使用 App 内置版本，且不会覆盖现有命令
 - 官方额度和多账号池额度均每 5 分钟自动刷新，并同步更新状态栏
 - 数据看板统计最近 24 小时、最近 7 天有效工作时长，并按本机时区展示月度工作量日历
@@ -60,7 +60,7 @@ App 首次运行会在 `~/.local/bin/codex` 不存在时创建一个指向内置
 
 ## 本地服务与数据
 
-AgentHub 内置并固定使用 Sub2API `v0.1.179`，其编排文件和本机密钥位于：
+AgentHub 内置并固定使用 Sub2API `v0.2.4`，其编排文件和本机密钥位于：
 
 ```text
 ~/Library/Application Support/AgentHub/Sub2API/

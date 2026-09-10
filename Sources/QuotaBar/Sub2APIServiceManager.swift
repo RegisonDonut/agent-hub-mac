@@ -196,7 +196,7 @@ enum Sub2APIServiceState: Equatable {
 
 @MainActor
 final class Sub2APIServiceManager: ObservableObject {
-    static let pinnedVersion = "0.1.179"
+    static let pinnedVersion = "0.2.4"
     static let hostPort = 18_080
     static let codexProviderID = "agenthub_multiaccount"
     static let managedQuotaRefreshInterval: TimeInterval = 5 * 60

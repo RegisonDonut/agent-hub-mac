@@ -242,12 +242,12 @@ for relative, expected in inventory.items():
     if digest.hexdigest() != expected["sha256"]:
         raise SystemExit(f"release artifact digest mismatch: {relative}")
 runtime = manifest.get("runtime") or {}
-if runtime.get("codex") != "0.149.0":
+if runtime.get("codex") != "0.153.4":
     raise SystemExit("release Codex version mismatch")
-if runtime.get("sub2api") != "0.1.179" or runtime.get("postgresql") != "18-alpine" or runtime.get("redis") != "8-alpine":
+if runtime.get("sub2api") != "0.2.4" or runtime.get("postgresql") != "18-alpine" or runtime.get("redis") != "8-alpine":
     raise SystemExit("release runtime version mismatch")
 if set(runtime.get("images") or []) != {
-    "weishaw/sub2api:0.1.179",
+    "weishaw/sub2api:0.2.4",
     "postgres:18-alpine",
     "redis:8-alpine",
 }:
@@ -283,7 +283,7 @@ PY
   secret=$(openssl rand -hex 32)
   cp "$runtime_dir/docker-compose.yml" "$smoke_compose"
   cat > "$smoke_env" <<EOF
-SUB2API_VERSION=0.1.179
+SUB2API_VERSION=0.2.4
 SERVER_PORT=$port
 RUN_MODE=simple
 SIMPLE_MODE_CONFIRM=true

@@ -165,8 +165,8 @@ for app_arch, want_arches in arch_alias.items():
 # ---- 3. codex binaries --------------------------------------------------
 print("[codex]")
 expected_codex_sha256 = {
-    "arm64": "f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963",
-    "x86_64": "c646bd178240bb50efd81c2f9919dd9124b126c815911f6c1b6db400786c5ccd",
+    "arm64": "b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3",
+    "x86_64": "88ecd2cbf8044832a49e7710394d9d328f7205fa5e8c8ebbdd015e002b4f6e21",
 }
 for app_arch, want in (("arm64", "arm64"), ("x86_64", "x86_64")):
     binary = os.path.join(runtime_dir, app_arch, "codex")
@@ -186,9 +186,9 @@ for app_arch, want in (("arm64", "arm64"), ("x86_64", "x86_64")):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     if digest.hexdigest() != expected_codex_sha256[app_arch]:
-        fail(f"codex/{app_arch}: SHA-256 does not match the pinned Codex 0.149.0 binary")
+        fail(f"codex/{app_arch}: SHA-256 does not match the pinned Codex 0.153.4 binary")
     else:
-        ok(f"codex/{app_arch}: pinned Codex 0.149.0 SHA-256")
+        ok(f"codex/{app_arch}: pinned Codex 0.153.4 SHA-256")
 print()
 
 # ---- 4. VERSIONS.txt must describe what is really shipped ---------------
@@ -204,7 +204,7 @@ else:
             k, _, v = line.partition(":")
             claimed[k.strip()] = v.strip()
     expect = {}
-    expect["OpenAI Codex CLI"] = "0.149.0"
+    expect["OpenAI Codex CLI"] = "0.153.4"
     for image in required:
         repo, _, tag = image.rpartition(":")
         if repo == "postgres":

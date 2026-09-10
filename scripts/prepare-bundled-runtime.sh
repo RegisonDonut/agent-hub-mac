@@ -4,8 +4,8 @@ set -euo pipefail
 project_dir="${0:A:h:h}"
 runtime_dir="$project_dir/Resources/BundledRuntime"
 licenses_dir="$runtime_dir/ThirdPartyLicenses"
-codex_version="0.149.0"
-sub2api_version="0.1.179"
+codex_version="0.153.4"
+sub2api_version="0.2.4"
 # Must stay in sync with Sub2APIServiceManager.composeFile. scripts/verify-bundle.sh enforces it.
 postgres_image="postgres:18-alpine"
 redis_image="redis:8-alpine"
@@ -48,11 +48,33 @@ if [[ "${1:-}" != "--skip-docker" ]]; then
     app_arch=${pair%% *}
     platform=${pair#* }
     for image in "weishaw/sub2api:${sub2api_version}" "$postgres_image" "$redis_image"; do
+      # Docker Hub is unreachable from some networks; fall back to GHCR for
+      # Sub2API and retag so the saved archive and compose file keep using the
+      # canonical Docker Hub reference.
+      fallback=""
+      if [[ "$image" == "weishaw/sub2api:"* ]]; then
+        fallback="ghcr.io/wei-shaw/sub2api:${sub2api_version}"
+      fi
+      pulled=0
       for attempt in 1 2 3; do
-        docker pull --platform "$platform" "$image" && break
-        if [[ "$attempt" == 3 ]]; then exit 1; fi
-        sleep $((attempt * 2))
+        if docker pull --platform "$platform" "$image"; then
+          pulled=1
+          break
+        fi
+        [[ "$attempt" == 3 ]] || sleep $((attempt * 2))
       done
+      if [[ "$pulled" == 0 && -n "$fallback" ]]; then
+        print -u2 "warning: $image unreachable, falling back to $fallback"
+        for attempt in 1 2 3; do
+          if docker pull --platform "$platform" "$fallback"; then
+            docker tag "$fallback" "$image"
+            pulled=1
+            break
+          fi
+          [[ "$attempt" == 3 ]] || sleep $((attempt * 2))
+        done
+      fi
+      if [[ "$pulled" == 0 ]]; then exit 1; fi
     done
     docker save "weishaw/sub2api:${sub2api_version}" "$postgres_image" "$redis_image" \
       | gzip -9 > "$runtime_dir/docker-images-${app_arch}.tar.gz"

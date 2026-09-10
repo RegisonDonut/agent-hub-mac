@@ -236,8 +236,8 @@ final class AgentHubTests: XCTestCase {
         XCTAssertTrue(readme.contains("Speech2Text"))
 
         let verifyBundleScript = try String(contentsOf: root.appendingPathComponent("scripts/verify-bundle.sh"))
-        XCTAssertTrue(verifyBundleScript.contains("f4a74117b8142cda581c95ff753abf4508b5636d89682c1ed77e4a9249af8963"))
-        XCTAssertTrue(verifyBundleScript.contains("c646bd178240bb50efd81c2f9919dd9124b126c815911f6c1b6db400786c5ccd"))
+        XCTAssertTrue(verifyBundleScript.contains("b973d440acac501fd2594a43e7ca9ce41e0a65b9dfb28d0d7a7837c99e1261e3"))
+        XCTAssertTrue(verifyBundleScript.contains("88ecd2cbf8044832a49e7710394d9d328f7205fa5e8c8ebbdd015e002b4f6e21"))
         XCTAssertTrue(verifyBundleScript.contains("archive carries unused images"))
         XCTAssertTrue(verifyBundleScript.contains("untagged image entry"))
         XCTAssertTrue(verifyBundleScript.contains("config blob missing or too large"))
@@ -1200,7 +1200,7 @@ final class AgentHubTests: XCTestCase {
     @MainActor
     func testSub2APIStackIsPinnedAndLocalOnly() {
         let compose = Sub2APIServiceManager.composeFile
-        XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.1.179")
+        XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.2.4")
         XCTAssertEqual(Sub2APIServiceManager.managedQuotaRefreshInterval, 300)
         XCTAssertEqual(
             Sub2APIServiceManager.resilientSchedulerSettings["openai_advanced_scheduler_enabled"] as? Bool,
