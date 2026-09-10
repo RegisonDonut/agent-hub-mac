@@ -5,7 +5,7 @@ project_dir="${0:A:h:h}"
 runtime_dir="$project_dir/Resources/BundledRuntime"
 licenses_dir="$runtime_dir/ThirdPartyLicenses"
 codex_version="0.149.0"
-sub2api_version="0.1.179"
+sub2api_version="0.2.4"
 # Must stay in sync with Sub2APIServiceManager.composeFile. scripts/verify-bundle.sh enforces it.
 postgres_image="postgres:18-alpine"
 redis_image="redis:8-alpine"

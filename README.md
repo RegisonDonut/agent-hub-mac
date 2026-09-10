@@ -60,7 +60,7 @@ App 首次运行会在 `~/.local/bin/codex` 不存在时创建一个指向内置
 
 ## 本地服务与数据
 
-AgentHub 内置并固定使用 Sub2API `v0.1.179`，其编排文件和本机密钥位于：
+AgentHub 内置并固定使用 Sub2API `v0.2.4`，其编排文件和本机密钥位于：
 
 ```text
 ~/Library/Application Support/AgentHub/Sub2API/

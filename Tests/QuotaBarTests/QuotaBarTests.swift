@@ -1200,7 +1200,7 @@ final class AgentHubTests: XCTestCase {
     @MainActor
     func testSub2APIStackIsPinnedAndLocalOnly() {
         let compose = Sub2APIServiceManager.composeFile
-        XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.1.179")
+        XCTAssertEqual(Sub2APIServiceManager.pinnedVersion, "0.2.4")
         XCTAssertEqual(Sub2APIServiceManager.managedQuotaRefreshInterval, 300)
         XCTAssertEqual(
             Sub2APIServiceManager.resilientSchedulerSettings["openai_advanced_scheduler_enabled"] as? Bool,
