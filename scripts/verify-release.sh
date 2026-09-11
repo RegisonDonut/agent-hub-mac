@@ -242,12 +242,12 @@ for relative, expected in inventory.items():
     if digest.hexdigest() != expected["sha256"]:
         raise SystemExit(f"release artifact digest mismatch: {relative}")
 runtime = manifest.get("runtime") or {}
-if runtime.get("codex") != "0.153.4":
+if runtime.get("codex") != "0.149.0":
     raise SystemExit("release Codex version mismatch")
-if runtime.get("sub2api") != "0.2.4" or runtime.get("postgresql") != "18-alpine" or runtime.get("redis") != "8-alpine":
+if runtime.get("sub2api") != "agenthub-retry" or runtime.get("postgresql") != "18-alpine" or runtime.get("redis") != "8-alpine":
     raise SystemExit("release runtime version mismatch")
 if set(runtime.get("images") or []) != {
-    "weishaw/sub2api:0.2.4",
+    "weishaw/sub2api:agenthub-retry",
     "postgres:18-alpine",
     "redis:8-alpine",
 }:
