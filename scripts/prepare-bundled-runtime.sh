@@ -17,6 +17,10 @@ mkdir -p "$runtime_dir/arm64" "$runtime_dir/x86_64" "$licenses_dir"
 download_codex() {
   local app_arch="$1"
   local release_arch="$2"
+  if [[ -x "$runtime_dir/$app_arch/codex" ]] && "$runtime_dir/$app_arch/codex" --version 2>/dev/null | grep -q "${codex_version}"; then
+    print "Reusing existing Codex CLI $app_arch ${codex_version}"
+    return
+  fi
   local archive="$work_dir/codex-$app_arch.tar.gz"
   curl -fL --retry 4 --retry-all-errors \
     "https://github.com/openai/codex/releases/download/rust-v${codex_version}/codex-${release_arch}-apple-darwin.tar.gz" \
