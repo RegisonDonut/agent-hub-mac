@@ -1,0 +1,7 @@
+OpenAI Codex CLI: 0.149.0
+Sub2API: agenthub-retry
+PostgreSQL: 18-alpine
+Redis: 8-alpine
+
+Sub2API source: https://github.com/Wei-Shaw/sub2api/tree/main
+Codex source: https://github.com/openai/codex/tree/rust-v0.149.0
