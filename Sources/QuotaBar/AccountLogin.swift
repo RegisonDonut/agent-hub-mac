@@ -5,10 +5,10 @@ struct AccountLoginLauncher: Sendable {
         guard account.provider == .codex else {
             throw AccountLoginError.failed("AgentHub 目前仅支持 Codex")
         }
-        try await loginCodex()
+        try await switchOfficialCodexAccount()
     }
 
-    private func loginCodex() async throws {
+    func switchOfficialCodexAccount() async throws {
         guard let codex = ExecutableLocator.find("codex") else {
             throw QuotaError.executableMissing("Codex CLI")
         }

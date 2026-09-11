@@ -83,6 +83,30 @@ final class QuotaStore: ObservableObject {
         }
     }
 
+    func switchOfficialCodexAccount() {
+        guard loggingInAccountID == nil else { return }
+        let currentAccountID = accounts.first { $0.provider == .codex && $0.isCurrent }?.id
+        loggingInAccountID = currentAccountID ?? "codex:official"
+        loginStatusMessage = "正在退出当前账号并打开 Codex 官方登录页…"
+
+        loginTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await loginLauncher.switchOfficialCodexAccount()
+                loginStatusMessage = "登录完成，正在刷新账号和额度…"
+                await refresh()
+                loginStatusMessage = nil
+            } catch is CancellationError {
+                loginStatusMessage = "已取消账号切换"
+            } catch {
+                loginStatusMessage = error.localizedDescription
+                await refresh()
+            }
+            loggingInAccountID = nil
+            loginTask = nil
+        }
+    }
+
     func cancelLogin() {
         guard loginTask != nil else { return }
         loginStatusMessage = "正在取消登录授权…"

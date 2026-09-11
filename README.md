@@ -1,5 +1,9 @@
 # AgentHub for macOS
 
+## 开发提交规则
+
+每次更新代码或运行时配置后，必须立即创建新的 Git commit 并推送到 `origin/main`。发布包必须从干净且已提交的工作区构建；本地 `dist/` 只保留最新一版 `AgentHub.app`、ZIP 和校验文件。
+
 AgentHub 是一个原生 macOS Codex 管理器，统一管理官方 Codex 登录、本机多账号池、额度和线路切换。
 
 主要功能：

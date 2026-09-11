@@ -196,7 +196,8 @@ enum Sub2APIServiceState: Equatable {
 
 @MainActor
 final class Sub2APIServiceManager: ObservableObject {
-    static let pinnedVersion = "0.2.4"
+    // Local build includes account-pool wait/retry handling for transient 429/503.
+    static let pinnedVersion = "agenthub-retry"
     static let hostPort = 18_080
     static let codexProviderID = "agenthub_multiaccount"
     static let managedQuotaRefreshInterval: TimeInterval = 5 * 60
@@ -1502,6 +1503,11 @@ final class Sub2APIServiceManager: ObservableObject {
           JWT_EXPIRE_HOUR: "24"
           TOTP_ENCRYPTION_KEY: "${TOTP_ENCRYPTION_KEY}"
           TZ: "${TZ}"
+          GATEWAY_SCHEDULING_STICKY_SESSION_MAX_WAITING: "100"
+          GATEWAY_SCHEDULING_STICKY_SESSION_WAIT_TIMEOUT: "10m"
+          GATEWAY_SCHEDULING_FALLBACK_MAX_WAITING: "100"
+          GATEWAY_SCHEDULING_FALLBACK_WAIT_TIMEOUT: "10m"
+          GATEWAY_SCHEDULING_PREFER_SOONEST_RESET: "true"
         depends_on:
           postgres:
             condition: service_healthy

@@ -5,7 +5,7 @@ project_dir="${0:A:h:h}"
 runtime_dir="$project_dir/Resources/BundledRuntime"
 licenses_dir="$runtime_dir/ThirdPartyLicenses"
 codex_version="0.153.4"
-sub2api_version="0.2.4"
+sub2api_version="agenthub-retry"
 # Must stay in sync with Sub2APIServiceManager.composeFile. scripts/verify-bundle.sh enforces it.
 postgres_image="postgres:18-alpine"
 redis_image="redis:8-alpine"
@@ -35,7 +35,7 @@ download_codex x86_64 x86_64
 
 curl -fL --retry 4 https://raw.githubusercontent.com/openai/codex/rust-v${codex_version}/LICENSE \
   -o "$licenses_dir/OpenAI-Codex-Apache-2.0.txt"
-curl -fL --retry 4 https://raw.githubusercontent.com/Wei-Shaw/sub2api/v${sub2api_version}/LICENSE \
+curl -fL --retry 4 https://raw.githubusercontent.com/Wei-Shaw/sub2api/main/LICENSE \
   -o "$licenses_dir/Sub2API-LGPL-3.0.txt"
 curl -fL --retry 4 https://raw.githubusercontent.com/postgres/postgres/REL_18_STABLE/COPYRIGHT \
   -o "$licenses_dir/PostgreSQL.txt"
@@ -56,6 +56,14 @@ if [[ "${1:-}" != "--skip-docker" ]]; then
         fallback="ghcr.io/wei-shaw/sub2api:${sub2api_version}"
       fi
       pulled=0
+      source_image="$image"
+      if [[ "$image" == "weishaw/sub2api:agenthub-retry" && "$app_arch" == "x86_64" ]]; then
+        source_image="weishaw/sub2api:agenthub-retry-amd64"
+      fi
+      if [[ "$image" == "weishaw/sub2api:agenthub-retry" && -n "$(docker image inspect "$source_image" >/dev/null 2>&1 && echo yes)" ]]; then
+        if [[ "$source_image" != "$image" ]]; then docker tag "$source_image" "$image"; fi
+        pulled=1
+      fi
       for attempt in 1 2 3; do
         if docker pull --platform "$platform" "$image"; then
           pulled=1
@@ -90,7 +98,7 @@ printf '%s\n' \
   "PostgreSQL: ${postgres_image#postgres:}" \
   "Redis: ${redis_image#redis:}" \
   "" \
-  "Sub2API source: https://github.com/Wei-Shaw/sub2api/tree/v${sub2api_version}" \
+  "Sub2API source: https://github.com/Wei-Shaw/sub2api/tree/main" \
   "Codex source: https://github.com/openai/codex/tree/rust-v${codex_version}" \
   > "$runtime_dir/VERSIONS.txt"
 

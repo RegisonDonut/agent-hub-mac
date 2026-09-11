@@ -154,15 +154,38 @@ struct Sub2APIManagerView: View {
                     .padding(.horizontal, 7)
                     .padding(.vertical, 3)
                     .background((service.codexRoutingEnabled ? Color.secondary : Color.blue).opacity(0.12), in: Capsule())
-                Button(account == nil ? "登录" : "检查授权") {
-                    Task {
-                        await service.signInToOfficialCodex()
-                        await store.refresh()
+                Button {
+                    if account == nil {
+                        Task {
+                            await service.signInToOfficialCodex()
+                            await store.refresh()
+                        }
+                    } else {
+                        store.switchOfficialCodexAccount()
+                    }
+                } label: {
+                    if store.loggingInAccountID != nil {
+                        HStack(spacing: 5) {
+                            ProgressView().controlSize(.small)
+                            Text("正在切换")
+                        }
+                    } else {
+                        Label(
+                            account == nil ? "登录" : "切换账号",
+                            systemImage: account == nil ? "person.crop.circle.badge.plus" : "arrow.triangle.2.circlepath"
+                        )
                     }
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
-                .disabled(service.isUpdatingCodexRouting)
+                .disabled(service.isUpdatingCodexRouting || store.loggingInAccountID != nil)
+            }
+
+            if let message = store.loginStatusMessage {
+                Label(message, systemImage: "info.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if let quota = store.snapshot.codexWeekly {
